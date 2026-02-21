@@ -9,7 +9,6 @@ function Install-OpenClaw {
 
     $ErrorActionPreference = "Stop"
     $installDir = "$env:USERPROFILE\openclaw"
-    $discordWebhook = $null  # Set by config if needed
 
     Write-Host ""
     Write-Host "========================================" -ForegroundColor Cyan
@@ -17,37 +16,64 @@ function Install-OpenClaw {
     Write-Host "========================================" -ForegroundColor Cyan
     Write-Host ""
 
+    # --- Validate token format ---
+    if ($CopilotToken.Length -lt 10) {
+        Write-Host "  ERROR: Token looks too short. Check that you pasted the full token." -ForegroundColor Red
+        return
+    }
+    if ($CopilotToken -eq "YOUR_COPILOT_TOKEN" -or $CopilotToken -eq "YOUR_TOKEN") {
+        Write-Host "  ERROR: Replace YOUR_TOKEN with the actual token you were given." -ForegroundColor Red
+        return
+    }
+
     # --- Step 1: Check prerequisites ---
     Write-Host "[1/7] Checking prerequisites..." -ForegroundColor Yellow
 
     # Check if WSL2 is available
     $wslInstalled = $false
     try {
-        $wslVersion = wsl --status 2>&1
+        $wslOutput = wsl --status 2>&1 | Out-String
         if ($LASTEXITCODE -eq 0) { $wslInstalled = $true }
-    } catch {}
+    } catch {
+        # wsl command not found at all
+    }
 
     if (-not $wslInstalled) {
         Write-Host "  WSL2 not found. Installing..." -ForegroundColor Yellow
-        wsl --install --no-distribution
+        try {
+            wsl --install --no-distribution 2>&1 | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "  ERROR: WSL2 install failed. Try running PowerShell as Administrator." -ForegroundColor Red
+                return
+            }
+        } catch {
+            Write-Host "  ERROR: WSL2 install failed: $_" -ForegroundColor Red
+            Write-Host "  Try running PowerShell as Administrator." -ForegroundColor Red
+            return
+        }
+
         Write-Host ""
         Write-Host "  WSL2 installed! You need to RESTART your computer." -ForegroundColor Red
         Write-Host "  After restart, run this command again." -ForegroundColor Red
         Write-Host ""
-        # Save state so we can resume
-        @{ Step = "post-wsl"; Token = $CopilotToken } | ConvertTo-Json | Set-Content "$env:USERPROFILE\.openclaw-install-state.json"
-        
-        # Register scheduled task to remind user
-        $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -Command `"Write-Host 'Run your OpenClaw installer again after restart!' -ForegroundColor Cyan; Start-Sleep 10`""
-        $trigger = New-ScheduledTaskTrigger -AtLogon
-        Register-ScheduledTask -TaskName "OpenClaw-Reminder" -Action $action -Trigger $trigger -Force | Out-Null
-        
+
+        # Try to register a reminder (non-critical, don't fail if no admin)
+        try {
+            $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -Command `"Write-Host 'Run your OpenClaw installer again after restart!' -ForegroundColor Cyan; Start-Sleep 10`""
+            $trigger = New-ScheduledTaskTrigger -AtLogon
+            Register-ScheduledTask -TaskName "OpenClaw-Reminder" -Action $action -Trigger $trigger -Force | Out-Null
+            Write-Host "  (A reminder will appear after you log back in)" -ForegroundColor Gray
+        } catch {
+            Write-Host "  Reminder: run the install command again after reboot." -ForegroundColor Yellow
+        }
+
         return
     }
     Write-Host "  WSL2: OK" -ForegroundColor Green
 
-    # Check if Docker is available
+    # Check if Docker is available and running
     $dockerInstalled = $false
+    $dockerVersion = ""
     try {
         $dockerVersion = docker version --format '{{.Server.Version}}' 2>&1
         if ($LASTEXITCODE -eq 0) { $dockerInstalled = $true }
@@ -55,31 +81,58 @@ function Install-OpenClaw {
 
     if (-not $dockerInstalled) {
         Write-Host "  Docker not found. Installing Docker Desktop..." -ForegroundColor Yellow
-        
+
+        $installed = $false
+
         # Try winget first
-        $wingetAvailable = $false
-        try { winget --version 2>&1 | Out-Null; $wingetAvailable = $true } catch {}
-        
-        if ($wingetAvailable) {
-            winget install -e --id Docker.DockerDesktop --accept-source-agreements --accept-package-agreements
-        } else {
-            # Download directly
+        try {
+            $null = winget --version 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "  Installing via winget..." -ForegroundColor Yellow
+                winget install -e --id Docker.DockerDesktop --accept-source-agreements --accept-package-agreements 2>&1 | Out-Null
+                if ($LASTEXITCODE -eq 0) { $installed = $true }
+            }
+        } catch {}
+
+        # Fall back to direct download
+        if (-not $installed) {
             $dockerUrl = "https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe"
             $dockerInstaller = "$env:TEMP\DockerDesktopInstaller.exe"
-            Write-Host "  Downloading Docker Desktop..." -ForegroundColor Yellow
-            Invoke-WebRequest -Uri $dockerUrl -OutFile $dockerInstaller -UseBasicParsing
-            Start-Process -FilePath $dockerInstaller -ArgumentList "install", "--quiet", "--accept-license" -Wait
-            Remove-Item $dockerInstaller -Force
+            Write-Host "  Downloading Docker Desktop (this may take a few minutes)..." -ForegroundColor Yellow
+            try {
+                Invoke-WebRequest -Uri $dockerUrl -OutFile $dockerInstaller -UseBasicParsing
+                Start-Process -FilePath $dockerInstaller -ArgumentList "install", "--quiet", "--accept-license" -Wait
+                Remove-Item $dockerInstaller -Force -ErrorAction SilentlyContinue
+                $installed = $true
+            } catch {
+                Write-Host "  ERROR: Docker download/install failed: $_" -ForegroundColor Red
+                Write-Host "  Install Docker Desktop manually from https://docker.com/products/docker-desktop" -ForegroundColor Yellow
+                return
+            }
         }
-        
+
         Write-Host ""
         Write-Host "  Docker Desktop installed!" -ForegroundColor Green
-        Write-Host "  Please START Docker Desktop, wait for it to be ready," -ForegroundColor Yellow
-        Write-Host "  then run this command again." -ForegroundColor Yellow
+        Write-Host "  Please:" -ForegroundColor Yellow
+        Write-Host "    1. START Docker Desktop" -ForegroundColor Yellow
+        Write-Host "    2. Wait for it to say 'Docker Desktop is running'" -ForegroundColor Yellow
+        Write-Host "    3. Run this install command again" -ForegroundColor Yellow
         Write-Host ""
         return
     }
-    Write-Host "  Docker: OK ($dockerVersion)" -ForegroundColor Green
+    Write-Host "  Docker: OK (v$dockerVersion)" -ForegroundColor Green
+
+    # Verify Docker is actually responding (not just installed but stopped)
+    try {
+        docker info 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "  Docker is installed but not running. Start Docker Desktop first." -ForegroundColor Red
+            return
+        }
+    } catch {
+        Write-Host "  Docker is installed but not responding. Start Docker Desktop first." -ForegroundColor Red
+        return
+    }
 
     # --- Step 2: Create install directory ---
     Write-Host "[2/7] Setting up directory..." -ForegroundColor Yellow
@@ -136,7 +189,7 @@ function Install-OpenClaw {
 }
 "@ | Set-Content "$installDir\config\openclaw.json" -Encoding UTF8
 
-    # auth-profiles.json (with the shared copilot token)
+    # auth-profiles.json
     @"
 {
   "version": 1,
@@ -150,7 +203,7 @@ function Install-OpenClaw {
 }
 "@ | Set-Content "$installDir\config\auth-profiles.json" -Encoding UTF8
 
-    # github-copilot.token.json (placeholder — OpenClaw will refresh this)
+    # github-copilot.token.json
     @"
 {
   "token": "$CopilotToken",
@@ -205,15 +258,50 @@ volumes:
     # --- Step 6: Start OpenClaw ---
     Write-Host "[6/7] Starting OpenClaw..." -ForegroundColor Yellow
     Push-Location $installDir
-    docker compose up -d
+    try {
+        $composeOutput = docker compose up -d 2>&1 | Out-String
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "  ERROR: Docker Compose failed to start:" -ForegroundColor Red
+            Write-Host "  $composeOutput" -ForegroundColor Red
+            Pop-Location
+            return
+        }
+    } catch {
+        Write-Host "  ERROR: Failed to start containers: $_" -ForegroundColor Red
+        Pop-Location
+        return
+    }
     Pop-Location
-    
-    Write-Host "  OpenClaw is starting! (may take 1-2 minutes to install)" -ForegroundColor Green
+
+    # Wait for gateway to become ready (up to 90 seconds)
+    Write-Host "  Containers started. Waiting for OpenClaw to be ready..." -ForegroundColor Yellow
+    $ready = $false
+    for ($i = 0; $i -lt 18; $i++) {
+        Start-Sleep -Seconds 5
+        try {
+            $response = Invoke-WebRequest -Uri "http://localhost:18789/" -UseBasicParsing -TimeoutSec 3 2>&1
+            if ($response.StatusCode -eq 200) {
+                $ready = $true
+                break
+            }
+        } catch {}
+        Write-Host "  Still starting... ($([int](($i+1)*5))s)" -ForegroundColor Gray
+    }
+
+    if (-not $ready) {
+        Write-Host ""
+        Write-Host "  OpenClaw is still starting (this is normal on first run)." -ForegroundColor Yellow
+        Write-Host "  It needs to download packages. Check progress with:" -ForegroundColor Yellow
+        Write-Host "    cd $installDir && docker compose logs -f" -ForegroundColor Cyan
+        Write-Host ""
+    } else {
+        Write-Host "  OpenClaw is ready!" -ForegroundColor Green
+    }
 
     # --- Step 7: Show connection info ---
     Write-Host ""
     Write-Host "========================================" -ForegroundColor Green
-    Write-Host "   OpenClaw is ready!" -ForegroundColor Green
+    Write-Host "   OpenClaw is running!" -ForegroundColor Green
     Write-Host "========================================" -ForegroundColor Green
     Write-Host ""
     Write-Host "  Open in your browser:" -ForegroundColor White
@@ -234,12 +322,15 @@ Date: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
 "@ | Set-Content "$installDir\CONNECTION-INFO.txt" -Encoding UTF8
 
     # Open browser
-    Start-Process "http://localhost:18789/?token=$gatewayToken"
+    if ($ready) {
+        Start-Process "http://localhost:18789/?token=$gatewayToken"
+        Write-Host "  Browser opened!" -ForegroundColor Green
+    } else {
+        Write-Host "  Once it's ready, open: http://localhost:18789/?token=$gatewayToken" -ForegroundColor Cyan
+    }
+    Write-Host ""
 
-    # Clean up any install state
+    # Clean up install state and reminder task
     Remove-Item "$env:USERPROFILE\.openclaw-install-state.json" -Force -ErrorAction SilentlyContinue
     try { Unregister-ScheduledTask -TaskName "OpenClaw-Reminder" -Confirm:$false -ErrorAction SilentlyContinue } catch {}
-
-    Write-Host "  Browser opened! Give it a minute to finish installing." -ForegroundColor Green
-    Write-Host ""
 }
