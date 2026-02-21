@@ -39,7 +39,7 @@ function Install-OpenClaw {
     $ErrorActionPreference = "Stop"
     $script:INSTALLER_VERSION = "1.1.0"
     $script:INSTALLER_REPO = "ProfessorDeGraw/openclaw-friends"
-    $script:INSTALLER_BRANCH = "main"
+    $script:INSTALLER_BRANCH = "master"
     $script:INSTALLER_FILE = "install.ps1"
 
     # --- Telemetry (opt-in only) ---
@@ -820,6 +820,11 @@ volumes:
 
     Push-Location $installDir
     try {
+        # Clean up any leftover Docker networks from failed installs
+        try {
+            docker network rm openclaw_default 2>$null | Out-Null
+            docker network rm openclaw-friend_default 2>$null | Out-Null
+        } catch {}
         Show-Progress -Sub -Status "Pulling images & starting containers..."
         Log-Gray "Directory: $installDir"
         $composeOutput = docker compose up -d 2>&1 | Out-String
