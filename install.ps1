@@ -3,26 +3,148 @@
 #   irm https://raw.githubusercontent.com/ProfessorDeGraw/openclaw-friends/main/install.ps1 | iex; Install-OpenClaw "YOUR_COPILOT_TOKEN"
 # Usage (headless/CI):
 #   Install-OpenClaw -CopilotToken "TOKEN" -HeadlessMode -ChannelType discord
+# Version/Update:
+#   Install-OpenClaw -Version
+#   Install-OpenClaw -Update
 # Flags:
 #   -HeadlessMode     Skip browser launch, suppress interactive prompts, output machine-readable info
 #   -ChannelType      Pre-configure a messaging channel: discord, telegram, signal, or none (default: none)
 #   -ChannelToken     Bot token for the chosen channel (Discord bot token, Telegram bot token, etc.)
+#   -Version          Print installer version and exit
+#   -Update           Check for newer version on GitHub and self-update
 
 function Install-OpenClaw {
     param(
-        [Parameter(Mandatory=$true)]
-        [string]$CopilotToken,
+        [Parameter(Mandatory=$false)]
+        [string]$CopilotToken = "",
 
         [switch]$HeadlessMode,
 
         [ValidateSet("none", "discord", "telegram", "signal")]
         [string]$ChannelType = "none",
 
-        [string]$ChannelToken = ""
+        [string]$ChannelToken = "",
+
+        [switch]$Version,
+
+        [switch]$Update
     )
 
     $ErrorActionPreference = "Stop"
+    $script:INSTALLER_VERSION = "1.0.0"
+    $script:INSTALLER_REPO = "ProfessorDeGraw/openclaw-friends"
+    $script:INSTALLER_BRANCH = "main"
+    $script:INSTALLER_FILE = "install.ps1"
     $installDir = "$env:USERPROFILE\openclaw-friend"
+
+    # ── Version flag ──────────────────────────────────────────────
+    if ($Version) {
+        Write-Host "OpenClaw Friends Installer v$($script:INSTALLER_VERSION)"
+        return
+    }
+
+    # ── Update flag ───────────────────────────────────────────────
+    if ($Update) {
+        Write-Host ""
+        Write-Host "  Checking for updates..." -ForegroundColor Cyan
+
+        $remoteUrl = "https://raw.githubusercontent.com/$($script:INSTALLER_REPO)/$($script:INSTALLER_BRANCH)/$($script:INSTALLER_FILE)"
+
+        try {
+            # Fetch remote script
+            $remoteScript = (Invoke-WebRequest -Uri $remoteUrl -UseBasicParsing -TimeoutSec 15).Content
+
+            # Extract remote version
+            $remoteVersion = "unknown"
+            if ($remoteScript -match 'INSTALLER_VERSION\s*=\s*"([^"]+)"') {
+                $remoteVersion = $Matches[1]
+            }
+
+            Write-Host "  Local version:  v$($script:INSTALLER_VERSION)" -ForegroundColor Gray
+            Write-Host "  Remote version: v$remoteVersion" -ForegroundColor Gray
+
+            if ($remoteVersion -eq $script:INSTALLER_VERSION) {
+                Write-Host ""
+                Write-Host "  Already up to date!" -ForegroundColor Green
+                Write-Host ""
+                return
+            }
+
+            # Compare versions (simple semver: split on dots, compare numerically)
+            function Compare-SemVer {
+                param([string]$a, [string]$b)
+                $aParts = $a.Split('.') | ForEach-Object { [int]$_ }
+                $bParts = $b.Split('.') | ForEach-Object { [int]$_ }
+                for ($i = 0; $i -lt [Math]::Max($aParts.Count, $bParts.Count); $i++) {
+                    $av = if ($i -lt $aParts.Count) { $aParts[$i] } else { 0 }
+                    $bv = if ($i -lt $bParts.Count) { $bParts[$i] } else { 0 }
+                    if ($av -lt $bv) { return -1 }
+                    if ($av -gt $bv) { return 1 }
+                }
+                return 0
+            }
+
+            $cmp = Compare-SemVer $script:INSTALLER_VERSION $remoteVersion
+            if ($cmp -ge 0) {
+                Write-Host ""
+                Write-Host "  Local version is same or newer. No update needed." -ForegroundColor Green
+                Write-Host ""
+                return
+            }
+
+            Write-Host ""
+            Write-Host "  New version available: v$($script:INSTALLER_VERSION) -> v$remoteVersion" -ForegroundColor Yellow
+
+            # Determine where this script lives on disk
+            $scriptPath = ""
+            # If loaded via irm | iex, we won't have a file path — save to default location
+            $defaultPath = Join-Path $installDir "install.ps1"
+
+            if ($MyInvocation.ScriptName -and (Test-Path $MyInvocation.ScriptName)) {
+                $scriptPath = $MyInvocation.ScriptName
+            } elseif (Test-Path $defaultPath) {
+                $scriptPath = $defaultPath
+            } else {
+                $scriptPath = $defaultPath
+            }
+
+            # Back up current version
+            if (Test-Path $scriptPath) {
+                $backupPath = "$scriptPath.bak"
+                Copy-Item -Path $scriptPath -Destination $backupPath -Force
+                Write-Host "  Backed up current: $backupPath" -ForegroundColor Gray
+            }
+
+            # Write new version
+            New-Item -ItemType Directory -Force -Path (Split-Path $scriptPath) | Out-Null
+            $remoteScript | Set-Content -Path $scriptPath -Encoding UTF8
+            Write-Host "  Updated: $scriptPath" -ForegroundColor Green
+            Write-Host ""
+            Write-Host "  To use the new version, reload and run:" -ForegroundColor Cyan
+            Write-Host "    . `"$scriptPath`"" -ForegroundColor White
+            Write-Host "    Install-OpenClaw -Version" -ForegroundColor White
+            Write-Host ""
+
+        } catch {
+            Write-Host "  Update check failed: $_" -ForegroundColor Red
+            Write-Host "  You can update manually from:" -ForegroundColor Yellow
+            Write-Host "  https://github.com/$($script:INSTALLER_REPO)" -ForegroundColor Cyan
+            Write-Host ""
+        }
+        return
+    }
+
+    # ── Require token for install ─────────────────────────────────
+    if (-not $CopilotToken -or $CopilotToken -eq "") {
+        Write-Host ""
+        Write-Host "  Usage: Install-OpenClaw <CopilotToken> [-HeadlessMode] [-ChannelType discord|telegram|signal] [-ChannelToken <token>]" -ForegroundColor Yellow
+        Write-Host "         Install-OpenClaw -Version" -ForegroundColor Gray
+        Write-Host "         Install-OpenClaw -Update" -ForegroundColor Gray
+        Write-Host ""
+        Write-Host "  Error: CopilotToken is required for installation." -ForegroundColor Red
+        Write-Host ""
+        return
+    }
 
     # --- Output helpers (respect headless mode) ---
     function Log-Step  { param([string]$msg) if (-not $HeadlessMode) { Write-Host $msg -ForegroundColor Yellow } }
