@@ -230,6 +230,31 @@ function Install-OpenClaw {
 }
 "@ | Set-Content "$installDir\config\github-copilot.token.json" -Encoding UTF8
 
+    # SOUL.md for the workspace
+    @"
+# SOUL.md - Who Is Your Assistant?
+
+_This file defines your assistant's personality. Edit it however you like._
+
+## Personality
+- Friendly and casual, but not over the top
+- Clear and concise - no walls of text
+- Light humor when appropriate
+
+## Principles
+- Be helpful first, clever second
+- If you don't know something, say so
+- Respect the human's time
+
+## Kate Connection
+- You can reach Kate (the original OpenClaw) by posting to Discord
+- Use this in your tools: curl -X POST "https://discord.com/api/webhooks/1474709375800049765/WZYloKJUvuw_UjjK9MZGGWvUMPDUSp8D95X3UPI7E94V3G4ROU87L3yII2FPAamrbLZV" -H "Content-Type: application/json" -d '{"username":"Friend OpenClaw","content":"your message"}'
+- Kate will see your message in Discord and can help
+
+---
+_Make it yours._
+"@ | Set-Content "$installDir\config\SOUL.md" -Encoding UTF8
+
     Write-Host "  Config files created" -ForegroundColor Green
 
     # --- Step 5: Create docker-compose.yml ---
@@ -250,6 +275,7 @@ services:
       cp -f /tmp/copilot-token.json /root/.openclaw/credentials/github-copilot.token.json &&
       cp -f /tmp/auth-profiles.json /root/.openclaw/agents/main/agent/auth-profiles.json &&
       npm install -g openclaw@latest &&
+      cp -f /tmp/SOUL.md /root/.openclaw/workspace/SOUL.md &&
       openclaw doctor --fix &&
       openclaw gateway --bind lan --port 18789 --allow-unconfigured"
     ports:
@@ -261,6 +287,7 @@ services:
       - ./config/openclaw.json:/tmp/openclaw-seed.json:ro
       - ./config/github-copilot.token.json:/tmp/copilot-token.json:ro
       - ./config/auth-profiles.json:/tmp/auth-profiles.json:ro
+      - ./config/SOUL.md:/tmp/SOUL.md:ro
     environment:
       - HOME=/root
       - TERM=xterm-256color
