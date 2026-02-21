@@ -1,0 +1,33 @@
+# OpenClaw Install Test — Debian 12 (Bookworm)
+# Simulates a fresh Debian server with Docker-in-Docker
+#
+# Build:  docker build -t oc-test-debian -f tests/Dockerfile.test-debian .
+# Run:    docker run --rm --privileged oc-test-debian
+
+FROM debian:12
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV LANG=C.UTF-8
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates curl wget git sudo iproute2 net-tools \
+      python3 iptables procps jq gnupg lsb-release \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL https://get.docker.com | sh
+
+RUN useradd -m -s /bin/bash tester \
+    && usermod -aG docker tester \
+    && echo "tester ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+COPY install.sh /opt/openclaw-friends/install.sh
+COPY tests/test-harness.sh /opt/openclaw-friends/tests/test-harness.sh
+RUN chmod +x /opt/openclaw-friends/install.sh /opt/openclaw-friends/tests/test-harness.sh
+
+WORKDIR /opt/openclaw-friends
+
+COPY tests/entrypoint-test.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["--self"]

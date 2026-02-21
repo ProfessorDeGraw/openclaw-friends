@@ -1,0 +1,37 @@
+# OpenClaw Install Test — Ubuntu 22.04
+# Simulates a fresh minimal server with Docker-in-Docker
+#
+# Build:  docker build -t oc-test-ubuntu -f tests/Dockerfile.test-ubuntu .
+# Run:    docker run --rm --privileged oc-test-ubuntu
+
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV LANG=C.UTF-8
+
+# Fresh server baseline
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates curl wget git sudo iproute2 net-tools \
+      python3 iptables procps jq \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Docker CE (the installer may also do this, but we need dockerd to exist)
+RUN curl -fsSL https://get.docker.com | sh
+
+# Create non-root test user (realistic scenario)
+RUN useradd -m -s /bin/bash tester \
+    && usermod -aG docker tester \
+    && echo "tester ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+COPY install.sh /opt/openclaw-friends/install.sh
+COPY tests/test-harness.sh /opt/openclaw-friends/tests/test-harness.sh
+RUN chmod +x /opt/openclaw-friends/install.sh /opt/openclaw-friends/tests/test-harness.sh
+
+WORKDIR /opt/openclaw-friends
+
+# Entrypoint: start dockerd, then run tests
+COPY tests/entrypoint-test.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["--self"]
