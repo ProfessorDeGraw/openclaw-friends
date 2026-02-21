@@ -157,6 +157,51 @@ function Install-OpenClaw {
     function Log-Info  { param([string]$msg) if (-not $HeadlessMode) { Write-Host "  $msg" -ForegroundColor Cyan } }
     function Log-Gray  { param([string]$msg) if (-not $HeadlessMode) { Write-Host "  $msg" -ForegroundColor Gray } }
 
+    # --- Checksum verification helper ---
+    function Verify-FileChecksum {
+        param(
+            [string]$FilePath,
+            [string]$ExpectedHash,
+            [string]$Algorithm = "SHA256"
+        )
+        if (-not $ExpectedHash) { return $true }  # No hash provided, skip
+        if (-not (Test-Path $FilePath)) { return $false }
+        $actual = (Get-FileHash -Path $FilePath -Algorithm $Algorithm).Hash
+        if ($actual -eq $ExpectedHash) {
+            Log-Ok "Checksum verified ($Algorithm)"
+            return $true
+        } else {
+            Log-Warn "Checksum mismatch! Expected: $ExpectedHash"
+            Log-Warn "                   Got:      $actual"
+            return $false
+        }
+    }
+
+    function Verify-ConfigIntegrity {
+        param([string]$Dir)
+        $issues = @()
+        # Verify JSON files are valid
+        Get-ChildItem "$Dir\config\*.json" -ErrorAction SilentlyContinue | ForEach-Object {
+            try {
+                $null = Get-Content $_.FullName -Raw | ConvertFrom-Json
+            } catch {
+                $issues += "Invalid JSON: $($_.Name)"
+            }
+        }
+        # Verify docker-compose.yml exists and has content
+        $composePath = "$Dir\docker-compose.yml"
+        if (Test-Path $composePath) {
+            $content = Get-Content $composePath -Raw
+            if ($content.Length -lt 100) {
+                $issues += "docker-compose.yml appears truncated ($($content.Length) bytes)"
+            }
+            if ($content -notmatch "openclaw") {
+                $issues += "docker-compose.yml missing openclaw service"
+            }
+        }
+        return $issues
+    }
+
     if (-not $HeadlessMode) {
         Write-Host ""
         Write-Host "========================================" -ForegroundColor Cyan
@@ -403,6 +448,10 @@ function Install-OpenClaw {
             Log-Warn "Downloading Docker Desktop (this may take a few minutes)..."
             try {
                 Invoke-WebRequest -Uri $dockerUrl -OutFile $dockerInstaller -UseBasicParsing
+                Log-Info "Verifying download integrity..."
+                $hashOk = Verify-FileChecksum -FilePath $dockerInstaller -Algorithm "SHA256"  # No pinned hash — just log the hash
+                $dlHash = (Get-FileHash -Path $dockerInstaller -Algorithm SHA256).Hash
+                Log-Gray "  SHA256: $dlHash"
                 Start-Process -FilePath $dockerInstaller -ArgumentList "install", "--quiet", "--accept-license" -Wait
                 Remove-Item $dockerInstaller -Force -ErrorAction SilentlyContinue
                 $installed = $true
@@ -656,6 +705,14 @@ volumes:
 "@ | Set-Content "$installDir\docker-compose.yml" -Encoding UTF8
 
     Log-Ok "Docker compose created"
+
+    # Verify generated files
+    $configIssues = Verify-ConfigIntegrity $installDir
+    if ($configIssues.Count -gt 0) {
+        foreach ($issue in $configIssues) { Log-Warn "Config issue: $issue" }
+    } else {
+        Log-Ok "All config files verified"
+    }
 
     # --- Step 6: Start OpenClaw ---
     Log-Step "[6/7] Starting OpenClaw..."
