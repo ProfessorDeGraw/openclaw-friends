@@ -112,27 +112,46 @@ function Install-OpenClaw {
         }
 
         Write-Host ""
-        Write-Host "  Docker Desktop installed!" -ForegroundColor Green
+        Write-Host "  Docker Desktop installed! Trying to start it..." -ForegroundColor Green
+        try {
+            Start-Process "C:\Program Files\Docker\Docker\Docker Desktop.exe" -ErrorAction SilentlyContinue
+        } catch {}
+    }
+
+    # Wait for Docker daemon to be ready (retry up to 60 seconds)
+    Write-Host "  Waiting for Docker to be ready..." -ForegroundColor Yellow
+    $dockerReady = $false
+    for ($retry = 0; $retry -lt 12; $retry++) {
+        try {
+            $null = docker info 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                $dockerReady = $true
+                break
+            }
+        } catch {}
+        if ($retry -eq 0) {
+            # Try launching Docker Desktop if not running
+            try {
+                Start-Process "C:\Program Files\Docker\Docker\Docker Desktop.exe" -ErrorAction SilentlyContinue
+            } catch {}
+        }
+        Write-Host "  Docker not ready yet... retrying in 5s ($([int](($retry+1)*5))s)" -ForegroundColor Gray
+        Start-Sleep -Seconds 5
+    }
+
+    if (-not $dockerReady) {
+        Write-Host ""
+        Write-Host "  Docker is not responding after 60 seconds." -ForegroundColor Red
         Write-Host "  Please:" -ForegroundColor Yellow
-        Write-Host "    1. START Docker Desktop" -ForegroundColor Yellow
+        Write-Host "    1. Open Docker Desktop manually" -ForegroundColor Yellow
         Write-Host "    2. Wait for it to say 'Docker Desktop is running'" -ForegroundColor Yellow
         Write-Host "    3. Run this install command again" -ForegroundColor Yellow
         Write-Host ""
         return
     }
-    Write-Host "  Docker: OK (v$dockerVersion)" -ForegroundColor Green
 
-    # Verify Docker is actually responding (not just installed but stopped)
-    try {
-        docker info 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "  Docker is installed but not running. Start Docker Desktop first." -ForegroundColor Red
-            return
-        }
-    } catch {
-        Write-Host "  Docker is installed but not responding. Start Docker Desktop first." -ForegroundColor Red
-        return
-    }
+    $dockerVersion = docker version --format '{{.Server.Version}}' 2>&1
+    Write-Host "  Docker: OK (v$dockerVersion)" -ForegroundColor Green
 
     # --- Step 2: Create install directory ---
     Write-Host "[2/7] Setting up directory..." -ForegroundColor Yellow
