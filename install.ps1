@@ -353,7 +353,7 @@ _Make it yours._
 services:
   openclaw-gateway:
     image: node:22.22.0-bookworm
-    container_name: openclaw-gateway
+    container_name: openclaw-friend
     restart: unless-stopped
     working_dir: /root
     command: >-
@@ -368,11 +368,11 @@ services:
       openclaw doctor --fix &&
       openclaw gateway --bind lan --port 18789 --allow-unconfigured"
     ports:
-      - "18789:18789"
-      - "18790:18790"
+      - "18800:18789"
+      - "18801:18790"
     volumes:
-      - openclaw-config:/root/.openclaw
-      - openclaw-workspace:/root/.openclaw/workspace
+      - friend-config:/root/.openclaw
+      - friend-workspace:/root/.openclaw/workspace
       - ./config/openclaw.json:/tmp/openclaw-seed.json:ro
       - ./config/github-copilot.token.json:/tmp/copilot-token.json:ro
       - ./config/auth-profiles.json:/tmp/auth-profiles.json:ro
@@ -384,8 +384,8 @@ services:
       - OPENCLAW_GATEWAY_TOKEN=$gatewayToken
 
 volumes:
-  openclaw-config:
-  openclaw-workspace:
+  friend-config:
+  friend-workspace:
 "@ | Set-Content "$installDir\docker-compose.yml" -Encoding UTF8
 
     Log-Ok "Docker compose created"
@@ -414,7 +414,7 @@ volumes:
     for ($i = 0; $i -lt 36; $i++) {
         Start-Sleep -Seconds 5
         try {
-            $response = Invoke-WebRequest -Uri "http://localhost:18789/" -UseBasicParsing -TimeoutSec 3 2>&1
+            $response = Invoke-WebRequest -Uri "http://localhost:18800/" -UseBasicParsing -TimeoutSec 3 2>&1
             if ($response.StatusCode -eq 200) {
                 $ready = $true
                 break
@@ -437,7 +437,7 @@ volumes:
     }
 
     # --- Step 7: Show connection info ---
-    $url = "http://localhost:18789/?token=$gatewayToken"
+    $url = "http://localhost:18800/?token=$gatewayToken"
 
     # Save connection info
     @"
