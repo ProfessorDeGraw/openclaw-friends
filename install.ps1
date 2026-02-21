@@ -376,6 +376,31 @@ Date: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
     }
     Write-Host ""
 
+    # --- Getting Started Checklist ---
+    Write-Host "----------------------------------------" -ForegroundColor Cyan
+    Write-Host "   Getting Started" -ForegroundColor Cyan
+    Write-Host "----------------------------------------" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "  [1] Open the web UI and say hello!" -ForegroundColor White
+    Write-Host "      http://localhost:18789/?token=$gatewayToken" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "  [2] Give your AI a name and personality" -ForegroundColor White
+    Write-Host "      Edit SOUL.md in the workspace to customize" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "  [3] Add Discord (optional)" -ForegroundColor White
+    Write-Host "      Create a bot at discord.com/developers" -ForegroundColor Gray
+    Write-Host "      Then add the token to your config" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "  [4] Check status anytime" -ForegroundColor White
+    Write-Host "      cd $installDir && docker compose logs -f" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "  [5] Stop / restart" -ForegroundColor White
+    Write-Host "      cd $installDir && docker compose down" -ForegroundColor Gray
+    Write-Host "      cd $installDir && docker compose up -d" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "  Need help? Check TROUBLESHOOTING.md or ask in Discord" -ForegroundColor Yellow
+    Write-Host ""
+
     # Clean up install state and reminder task
     Remove-Item "$env:USERPROFILE\.openclaw-install-state.json" -Force -ErrorAction SilentlyContinue
     try { Unregister-ScheduledTask -TaskName "OpenClaw-Reminder" -Confirm:$false -ErrorAction SilentlyContinue } catch {}
