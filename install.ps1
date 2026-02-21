@@ -1,33 +1,62 @@
 # OpenClaw Friends Installer
-# Usage: irm https://raw.githubusercontent.com/ProfessorDeGraw/openclaw-friends/main/install.ps1 | iex; Install-OpenClaw "YOUR_COPILOT_TOKEN"
+# Usage (interactive):
+#   irm https://raw.githubusercontent.com/ProfessorDeGraw/openclaw-friends/main/install.ps1 | iex; Install-OpenClaw "YOUR_COPILOT_TOKEN"
+# Usage (headless/CI):
+#   Install-OpenClaw -CopilotToken "TOKEN" -HeadlessMode -ChannelType discord
+# Flags:
+#   -HeadlessMode     Skip browser launch, suppress interactive prompts, output machine-readable info
+#   -ChannelType      Pre-configure a messaging channel: discord, telegram, signal, or none (default: none)
+#   -ChannelToken     Bot token for the chosen channel (Discord bot token, Telegram bot token, etc.)
 
 function Install-OpenClaw {
     param(
         [Parameter(Mandatory=$true)]
-        [string]$CopilotToken
+        [string]$CopilotToken,
+
+        [switch]$HeadlessMode,
+
+        [ValidateSet("none", "discord", "telegram", "signal")]
+        [string]$ChannelType = "none",
+
+        [string]$ChannelToken = ""
     )
 
     $ErrorActionPreference = "Stop"
     $installDir = "$env:USERPROFILE\openclaw"
 
-    Write-Host ""
-    Write-Host "========================================" -ForegroundColor Cyan
-    Write-Host "   OpenClaw Installer (Friends Edition)" -ForegroundColor Cyan
-    Write-Host "========================================" -ForegroundColor Cyan
-    Write-Host ""
+    # --- Output helpers (respect headless mode) ---
+    function Log-Step  { param([string]$msg) if (-not $HeadlessMode) { Write-Host $msg -ForegroundColor Yellow } }
+    function Log-Ok    { param([string]$msg) if (-not $HeadlessMode) { Write-Host "  $msg" -ForegroundColor Green } }
+    function Log-Warn  { param([string]$msg) if (-not $HeadlessMode) { Write-Host "  $msg" -ForegroundColor Yellow } }
+    function Log-Err   { param([string]$msg) Write-Host "  ERROR: $msg" -ForegroundColor Red }
+    function Log-Info  { param([string]$msg) if (-not $HeadlessMode) { Write-Host "  $msg" -ForegroundColor Cyan } }
+    function Log-Gray  { param([string]$msg) if (-not $HeadlessMode) { Write-Host "  $msg" -ForegroundColor Gray } }
+
+    if (-not $HeadlessMode) {
+        Write-Host ""
+        Write-Host "========================================" -ForegroundColor Cyan
+        Write-Host "   OpenClaw Installer (Friends Edition)" -ForegroundColor Cyan
+        Write-Host "========================================" -ForegroundColor Cyan
+        Write-Host ""
+    }
 
     # --- Validate token format ---
     if ($CopilotToken.Length -lt 10) {
-        Write-Host "  ERROR: Token looks too short. Check that you pasted the full token." -ForegroundColor Red
+        Log-Err "Token looks too short. Check that you pasted the full token."
         return
     }
     if ($CopilotToken -eq "YOUR_COPILOT_TOKEN" -or $CopilotToken -eq "YOUR_TOKEN") {
-        Write-Host "  ERROR: Replace YOUR_TOKEN with the actual token you were given." -ForegroundColor Red
+        Log-Err "Replace YOUR_TOKEN with the actual token you were given."
         return
     }
 
+    # --- Validate channel config ---
+    if ($ChannelType -ne "none" -and $ChannelToken -eq "") {
+        Log-Warn "No -ChannelToken provided for $ChannelType. Channel will be configured but you'll need to add the token later."
+    }
+
     # --- Step 1: Check prerequisites ---
-    Write-Host "[1/7] Checking prerequisites..." -ForegroundColor Yellow
+    Log-Step "[1/7] Checking prerequisites..."
 
     # Check if WSL2 is available
     $wslInstalled = $false
@@ -39,37 +68,43 @@ function Install-OpenClaw {
     }
 
     if (-not $wslInstalled) {
-        Write-Host "  WSL2 not found. Installing..." -ForegroundColor Yellow
+        Log-Warn "WSL2 not found. Installing..."
         try {
             wsl --install --no-distribution 2>&1 | Out-Null
             if ($LASTEXITCODE -ne 0) {
-                Write-Host "  ERROR: WSL2 install failed. Try running PowerShell as Administrator." -ForegroundColor Red
+                Log-Err "WSL2 install failed. Try running PowerShell as Administrator."
                 return
             }
         } catch {
-            Write-Host "  ERROR: WSL2 install failed: $_" -ForegroundColor Red
-            Write-Host "  Try running PowerShell as Administrator." -ForegroundColor Red
+            Log-Err "WSL2 install failed: $_"
+            Log-Warn "Try running PowerShell as Administrator."
             return
         }
 
-        Write-Host ""
-        Write-Host "  WSL2 installed! You need to RESTART your computer." -ForegroundColor Red
-        Write-Host "  After restart, run this command again." -ForegroundColor Red
-        Write-Host ""
+        if ($HeadlessMode) {
+            Write-Host "REBOOT_REQUIRED"
+        } else {
+            Write-Host ""
+            Write-Host "  WSL2 installed! You need to RESTART your computer." -ForegroundColor Red
+            Write-Host "  After restart, run this command again." -ForegroundColor Red
+            Write-Host ""
+        }
 
         # Try to register a reminder (non-critical, don't fail if no admin)
-        try {
-            $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -Command `"Write-Host 'Run your OpenClaw installer again after restart!' -ForegroundColor Cyan; Start-Sleep 10`""
-            $trigger = New-ScheduledTaskTrigger -AtLogon
-            Register-ScheduledTask -TaskName "OpenClaw-Reminder" -Action $action -Trigger $trigger -Force | Out-Null
-            Write-Host "  (A reminder will appear after you log back in)" -ForegroundColor Gray
-        } catch {
-            Write-Host "  Reminder: run the install command again after reboot." -ForegroundColor Yellow
+        if (-not $HeadlessMode) {
+            try {
+                $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -Command `"Write-Host 'Run your OpenClaw installer again after restart!' -ForegroundColor Cyan; Start-Sleep 10`""
+                $trigger = New-ScheduledTaskTrigger -AtLogon
+                Register-ScheduledTask -TaskName "OpenClaw-Reminder" -Action $action -Trigger $trigger -Force | Out-Null
+                Log-Gray "(A reminder will appear after you log back in)"
+            } catch {
+                Log-Warn "Reminder: run the install command again after reboot."
+            }
         }
 
         return
     }
-    Write-Host "  WSL2: OK" -ForegroundColor Green
+    Log-Ok "WSL2: OK"
 
     # Check if Docker is available and running
     $dockerInstalled = $false
@@ -80,7 +115,7 @@ function Install-OpenClaw {
     } catch {}
 
     if (-not $dockerInstalled) {
-        Write-Host "  Docker not found. Installing Docker Desktop..." -ForegroundColor Yellow
+        Log-Warn "Docker not found. Installing Docker Desktop..."
 
         $installed = $false
 
@@ -88,7 +123,7 @@ function Install-OpenClaw {
         try {
             $null = winget --version 2>&1
             if ($LASTEXITCODE -eq 0) {
-                Write-Host "  Installing via winget..." -ForegroundColor Yellow
+                Log-Warn "Installing via winget..."
                 winget install -e --id Docker.DockerDesktop --accept-source-agreements --accept-package-agreements 2>&1 | Out-Null
                 if ($LASTEXITCODE -eq 0) { $installed = $true }
             }
@@ -98,29 +133,30 @@ function Install-OpenClaw {
         if (-not $installed) {
             $dockerUrl = "https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe"
             $dockerInstaller = "$env:TEMP\DockerDesktopInstaller.exe"
-            Write-Host "  Downloading Docker Desktop (this may take a few minutes)..." -ForegroundColor Yellow
+            Log-Warn "Downloading Docker Desktop (this may take a few minutes)..."
             try {
                 Invoke-WebRequest -Uri $dockerUrl -OutFile $dockerInstaller -UseBasicParsing
                 Start-Process -FilePath $dockerInstaller -ArgumentList "install", "--quiet", "--accept-license" -Wait
                 Remove-Item $dockerInstaller -Force -ErrorAction SilentlyContinue
                 $installed = $true
             } catch {
-                Write-Host "  ERROR: Docker download/install failed: $_" -ForegroundColor Red
-                Write-Host "  Install Docker Desktop manually from https://docker.com/products/docker-desktop" -ForegroundColor Yellow
+                Log-Err "Docker download/install failed: $_"
+                Log-Warn "Install Docker Desktop manually from https://docker.com/products/docker-desktop"
                 return
             }
         }
 
-        Write-Host ""
-        Write-Host "  Docker Desktop installed! Trying to start it..." -ForegroundColor Green
+        Log-Ok "Docker Desktop installed! Trying to start it..."
         try {
             Start-Process "C:\Program Files\Docker\Docker\Docker Desktop.exe" -ErrorAction SilentlyContinue
         } catch {}
     }
 
     # Wait for Docker daemon to be ready (retry up to 2 minutes)
-    Write-Host "  Waiting for Docker to be ready (up to 2 minutes)..." -ForegroundColor Yellow
-    Write-Host "  If Docker Desktop isn't open, please start it now." -ForegroundColor Yellow
+    Log-Step "  Waiting for Docker to be ready (up to 2 minutes)..."
+    if (-not $HeadlessMode) {
+        Log-Warn "If Docker Desktop isn't open, please start it now."
+    }
     $dockerReady = $false
     for ($retry = 0; $retry -lt 24; $retry++) {
         try {
@@ -137,122 +173,82 @@ function Install-OpenClaw {
             } catch {}
         }
         $elapsed = [int](($retry + 1) * 5)
-        Write-Host "  Docker not ready yet... retrying in 5s (${elapsed}s / 120s)" -ForegroundColor Gray
+        Log-Gray "Docker not ready yet... retrying in 5s (${elapsed}s / 120s)"
         Start-Sleep -Seconds 5
     }
 
     if (-not $dockerReady) {
-        Write-Host ""
-        Write-Host "  Docker is not responding after 2 minutes." -ForegroundColor Red
-        Write-Host "  Please:" -ForegroundColor Yellow
-        Write-Host "    1. Open Docker Desktop manually" -ForegroundColor Yellow
-        Write-Host "    2. Wait for it to say 'Docker Desktop is running'" -ForegroundColor Yellow
-        Write-Host "    3. Run this install command again" -ForegroundColor Yellow
-        Write-Host ""
+        if ($HeadlessMode) {
+            Log-Err "Docker not responding after 120s."
+        } else {
+            Write-Host ""
+            Write-Host "  Docker is not responding after 2 minutes." -ForegroundColor Red
+            Write-Host "  Please:" -ForegroundColor Yellow
+            Write-Host "    1. Open Docker Desktop manually" -ForegroundColor Yellow
+            Write-Host "    2. Wait for it to say 'Docker Desktop is running'" -ForegroundColor Yellow
+            Write-Host "    3. Run this install command again" -ForegroundColor Yellow
+            Write-Host ""
+        }
         return
     }
 
     $dockerVersion = docker version --format '{{.Server.Version}}' 2>&1
-    Write-Host "  Docker: OK (v$dockerVersion)" -ForegroundColor Green
+    Log-Ok "Docker: OK (v$dockerVersion)"
 
     # --- Step 2: Create install directory ---
-    Write-Host "[2/7] Setting up directory..." -ForegroundColor Yellow
+    Log-Step "[2/7] Setting up directory..."
     New-Item -ItemType Directory -Force -Path $installDir | Out-Null
     New-Item -ItemType Directory -Force -Path "$installDir\config" | Out-Null
-    Write-Host "  Created: $installDir" -ForegroundColor Green
+    Log-Ok "Created: $installDir"
 
     # --- Step 3: Generate gateway token ---
-    Write-Host "[3/7] Generating security token..." -ForegroundColor Yellow
+    Log-Step "[3/7] Generating security token..."
     $gatewayToken = -join ((65..90) + (97..122) + (48..57) | Get-Random -Count 32 | ForEach-Object { [char]$_ })
-    Write-Host "  Token generated" -ForegroundColor Green
-
-    # --- Step 3b: Discord setup (optional) ---
-    Write-Host ""
-    Write-Host "[3b/7] Discord Setup (optional)" -ForegroundColor Yellow
-    Write-Host ""
-    Write-Host "  Want to connect your assistant to Discord?" -ForegroundColor White
-    Write-Host "  You'll need a Discord bot token and a channel ID." -ForegroundColor Gray
-    Write-Host ""
-    Write-Host "  How to get these:" -ForegroundColor Cyan
-    Write-Host "    1. Go to https://discord.com/developers/applications" -ForegroundColor Gray
-    Write-Host "    2. Click 'New Application' and give it a name" -ForegroundColor Gray
-    Write-Host "    3. Go to Bot > click 'Reset Token' > copy the token" -ForegroundColor Gray
-    Write-Host "    4. Under 'Privileged Gateway Intents', enable:" -ForegroundColor Gray
-    Write-Host "       - Message Content Intent" -ForegroundColor Gray
-    Write-Host "       - Server Members Intent" -ForegroundColor Gray
-    Write-Host "    5. Go to OAuth2 > URL Generator" -ForegroundColor Gray
-    Write-Host "       - Scopes: bot" -ForegroundColor Gray
-    Write-Host "       - Permissions: Send Messages, Read Message History" -ForegroundColor Gray
-    Write-Host "       - Copy the URL and open it to invite the bot to your server" -ForegroundColor Gray
-    Write-Host "    6. To get a channel ID: right-click a channel in Discord > Copy Channel ID" -ForegroundColor Gray
-    Write-Host "       (Enable Developer Mode in Discord Settings > Advanced if you don't see this)" -ForegroundColor Gray
-    Write-Host ""
-
-    $DiscordToken = ""
-    $DiscordChannelId = ""
-    $setupDiscord = $false
-
-    $discordChoice = Read-Host "  Set up Discord now? (y/N)"
-    if ($discordChoice -eq "y" -or $discordChoice -eq "Y") {
-        Write-Host ""
-
-        # Prompt for bot token with validation
-        while ($true) {
-            $DiscordToken = Read-Host "  Enter your Discord bot token"
-            $DiscordToken = $DiscordToken.Trim()
-
-            if ([string]::IsNullOrEmpty($DiscordToken)) {
-                Write-Host "  Skipping Discord setup." -ForegroundColor Yellow
-                break
-            }
-            # Discord bot tokens are typically 59-72+ chars with dots
-            if ($DiscordToken.Length -lt 50) {
-                Write-Host "  That token looks too short. Discord bot tokens are usually 59+ characters." -ForegroundColor Red
-                Write-Host "  Make sure you copied the full token from the Bot page." -ForegroundColor Yellow
-                continue
-            }
-            if ($DiscordToken -notmatch "\.") {
-                Write-Host "  That doesn't look like a Discord bot token (should contain dots)." -ForegroundColor Red
-                Write-Host "  Make sure you're using the BOT token, not the client secret." -ForegroundColor Yellow
-                continue
-            }
-            Write-Host "  Token accepted" -ForegroundColor Green
-            break
-        }
-
-        if (-not [string]::IsNullOrEmpty($DiscordToken)) {
-            # Prompt for channel ID with validation
-            while ($true) {
-                $DiscordChannelId = Read-Host "  Enter the Discord channel ID for your bot"
-                $DiscordChannelId = $DiscordChannelId.Trim()
-
-                if ([string]::IsNullOrEmpty($DiscordChannelId)) {
-                    Write-Host "  Skipping Discord setup (need both token and channel)." -ForegroundColor Yellow
-                    $DiscordToken = ""
-                    break
-                }
-                # Channel IDs are numeric, typically 17-20 digits
-                if ($DiscordChannelId -notmatch "^\d{15,22}$") {
-                    Write-Host "  Channel IDs are numbers (like 1234567890123456789)." -ForegroundColor Red
-                    Write-Host "  Right-click a channel in Discord > Copy Channel ID" -ForegroundColor Yellow
-                    continue
-                }
-                Write-Host "  Channel ID accepted" -ForegroundColor Green
-                $setupDiscord = $true
-                break
-            }
-        }
-
-        if ($setupDiscord) {
-            Write-Host "  Discord will be configured!" -ForegroundColor Green
-        }
-    } else {
-        Write-Host "  Skipped. You can add Discord later by editing the config." -ForegroundColor Gray
-    }
-    Write-Host ""
+    Log-Ok "Token generated"
 
     # --- Step 4: Create config files ---
-    Write-Host "[4/7] Creating configuration..." -ForegroundColor Yellow
+    Log-Step "[4/7] Creating configuration..."
+
+    # Build channel configuration based on -ChannelType
+    $channelConfig = "{}"
+    switch ($ChannelType) {
+        "discord" {
+            $discordToken = if ($ChannelToken) { $ChannelToken } else { "PASTE_DISCORD_BOT_TOKEN_HERE" }
+            $channelConfig = @"
+{
+      "discord": {
+        "adapter": "discord",
+        "token": "$discordToken",
+        "enabled": true
+      }
+    }
+"@
+        }
+        "telegram" {
+            $telegramToken = if ($ChannelToken) { $ChannelToken } else { "PASTE_TELEGRAM_BOT_TOKEN_HERE" }
+            $channelConfig = @"
+{
+      "telegram": {
+        "adapter": "telegram",
+        "token": "$telegramToken",
+        "enabled": true
+      }
+    }
+"@
+        }
+        "signal" {
+            $signalNumber = if ($ChannelToken) { $ChannelToken } else { "PASTE_SIGNAL_NUMBER_HERE" }
+            $channelConfig = @"
+{
+      "signal": {
+        "adapter": "signal",
+        "number": "$signalNumber",
+        "enabled": true
+      }
+    }
+"@
+        }
+    }
 
     # openclaw.json
     @"
@@ -287,7 +283,7 @@ function Install-OpenClaw {
   "tools": {
     "allow": ["group:fs", "group:runtime", "group:sessions", "group:memory", "group:messaging"]
   },
-  "channels": $(if ($setupDiscord) { "{\`"discord\`": {\`"enabled\`": true, \`"token\`": \`"$DiscordToken\`", \`"channels\`": [\`"$DiscordChannelId\`"]}}" } else { "{}" }),
+  "channels": $channelConfig,
   "models": {
     "mode": "merge",
     "providers": {}
@@ -342,10 +338,16 @@ _This file defines your assistant's personality. Edit it however you like._
 _Make it yours._
 "@ | Set-Content "$installDir\config\SOUL.md" -Encoding UTF8
 
-    Write-Host "  Config files created" -ForegroundColor Green
+    Log-Ok "Config files created"
+    if ($ChannelType -ne "none") {
+        Log-Ok "Channel pre-configured: $ChannelType"
+        if ($ChannelToken -eq "") {
+            Log-Warn "Remember to update the placeholder token in $installDir\config\openclaw.json"
+        }
+    }
 
     # --- Step 5: Create docker-compose.yml ---
-    Write-Host "[5/7] Creating Docker configuration..." -ForegroundColor Yellow
+    Log-Step "[5/7] Creating Docker configuration..."
 
     @"
 services:
@@ -386,29 +388,28 @@ volumes:
   openclaw-workspace:
 "@ | Set-Content "$installDir\docker-compose.yml" -Encoding UTF8
 
-    Write-Host "  Docker compose created" -ForegroundColor Green
+    Log-Ok "Docker compose created"
 
     # --- Step 6: Start OpenClaw ---
-    Write-Host "[6/7] Starting OpenClaw..." -ForegroundColor Yellow
+    Log-Step "[6/7] Starting OpenClaw..."
     Push-Location $installDir
     try {
         $composeOutput = docker compose up -d 2>&1 | Out-String
         if ($LASTEXITCODE -ne 0) {
-            Write-Host "  ERROR: Docker Compose failed to start:" -ForegroundColor Red
-            Write-Host "  $composeOutput" -ForegroundColor Red
+            Log-Err "Docker Compose failed to start: $composeOutput"
             Pop-Location
             return
         }
     } catch {
-        Write-Host "  ERROR: Failed to start containers: $_" -ForegroundColor Red
+        Log-Err "Failed to start containers: $_"
         Pop-Location
         return
     }
     Pop-Location
 
     # Wait for gateway to become ready (up to 3 minutes)
-    Write-Host "  Containers started. Waiting for OpenClaw gateway to be ready (up to 3 minutes)..." -ForegroundColor Yellow
-    Write-Host "  First run downloads packages — this is normal." -ForegroundColor Gray
+    Log-Step "  Containers started. Waiting for OpenClaw gateway to be ready (up to 3 minutes)..."
+    Log-Gray "First run downloads packages — this is normal."
     $ready = $false
     for ($i = 0; $i -lt 36; $i++) {
         Start-Sleep -Seconds 5
@@ -420,75 +421,103 @@ volumes:
             }
         } catch {}
         $elapsed = [int](($i + 1) * 5)
-        Write-Host "  Still starting... (${elapsed}s / 180s)" -ForegroundColor Gray
+        Log-Gray "Still starting... (${elapsed}s / 180s)"
     }
 
     if (-not $ready) {
-        Write-Host ""
-        Write-Host "  OpenClaw is still starting (this is normal on first run)." -ForegroundColor Yellow
-        Write-Host "  It needs to download packages. Check progress with:" -ForegroundColor Yellow
-        Write-Host "    cd $installDir && docker compose logs -f" -ForegroundColor Cyan
-        Write-Host ""
+        if (-not $HeadlessMode) {
+            Write-Host ""
+            Log-Warn "OpenClaw is still starting (this is normal on first run)."
+            Log-Warn "It needs to download packages. Check progress with:"
+            Log-Info "cd $installDir && docker compose logs -f"
+            Write-Host ""
+        }
     } else {
-        Write-Host "  OpenClaw is ready!" -ForegroundColor Green
+        Log-Ok "OpenClaw is ready!"
     }
 
     # --- Step 7: Show connection info ---
-    Write-Host ""
-    Write-Host "========================================" -ForegroundColor Green
-    Write-Host "   OpenClaw is running!" -ForegroundColor Green
-    Write-Host "========================================" -ForegroundColor Green
-    Write-Host ""
-    Write-Host "  Open in your browser:" -ForegroundColor White
-    Write-Host "  http://localhost:18789/?token=$gatewayToken" -ForegroundColor Cyan
-    Write-Host ""
-    Write-Host "  Your token (save this!): $gatewayToken" -ForegroundColor Yellow
-    Write-Host "  Install location: $installDir" -ForegroundColor Gray
-    Write-Host ""
+    $url = "http://localhost:18789/?token=$gatewayToken"
 
     # Save connection info
     @"
 OpenClaw Connection Info
 ========================
-URL: http://localhost:18789/?token=$gatewayToken
+URL: $url
 Token: $gatewayToken
 Install: $installDir
+Channel: $ChannelType
 Date: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
 "@ | Set-Content "$installDir\CONNECTION-INFO.txt" -Encoding UTF8
 
-    # Open browser
-    if ($ready) {
-        Start-Process "http://localhost:18789/?token=$gatewayToken"
-        Write-Host "  Browser opened!" -ForegroundColor Green
+    if ($HeadlessMode) {
+        # Machine-readable output for scripts/CI
+        Write-Host "INSTALL_OK"
+        Write-Host "URL=$url"
+        Write-Host "TOKEN=$gatewayToken"
+        Write-Host "DIR=$installDir"
+        Write-Host "CHANNEL=$ChannelType"
+        Write-Host "READY=$($ready.ToString().ToLower())"
     } else {
-        Write-Host "  Once it's ready, open: http://localhost:18789/?token=$gatewayToken" -ForegroundColor Cyan
-    }
-    Write-Host ""
+        Write-Host ""
+        Write-Host "========================================" -ForegroundColor Green
+        Write-Host "   OpenClaw is running!" -ForegroundColor Green
+        Write-Host "========================================" -ForegroundColor Green
+        Write-Host ""
+        Write-Host "  Open in your browser:" -ForegroundColor White
+        Write-Host "  $url" -ForegroundColor Cyan
+        Write-Host ""
+        Write-Host "  Your token (save this!): $gatewayToken" -ForegroundColor Yellow
+        Write-Host "  Install location: $installDir" -ForegroundColor Gray
+        if ($ChannelType -ne "none") {
+            Write-Host "  Channel: $ChannelType (pre-configured)" -ForegroundColor Gray
+        }
+        Write-Host ""
 
-    # --- Getting Started Checklist ---
-    Write-Host "----------------------------------------" -ForegroundColor Cyan
-    Write-Host "   Getting Started" -ForegroundColor Cyan
-    Write-Host "----------------------------------------" -ForegroundColor Cyan
-    Write-Host ""
-    Write-Host "  [1] Open the web UI and say hello!" -ForegroundColor White
-    Write-Host "      http://localhost:18789/?token=$gatewayToken" -ForegroundColor Gray
-    Write-Host ""
-    Write-Host "  [2] Give your AI a name and personality" -ForegroundColor White
-    Write-Host "      Edit SOUL.md in the workspace to customize" -ForegroundColor Gray
-    Write-Host ""
-    Write-Host "  [3] Add Discord (optional)" -ForegroundColor White
-    Write-Host "      Create a bot at discord.com/developers" -ForegroundColor Gray
-    Write-Host "      Then add the token to your config" -ForegroundColor Gray
-    Write-Host ""
-    Write-Host "  [4] Check status anytime" -ForegroundColor White
-    Write-Host "      cd $installDir && docker compose logs -f" -ForegroundColor Gray
-    Write-Host ""
-    Write-Host "  [5] Stop / restart" -ForegroundColor White
-    Write-Host "      cd $installDir && docker compose down" -ForegroundColor Gray
-    Write-Host "      cd $installDir && docker compose up -d" -ForegroundColor Gray
-    Write-Host ""
-    Write-Host "  Need help? Check TROUBLESHOOTING.md or ask in Discord" -ForegroundColor Yellow
-    Write-Host ""
+        # Open browser (interactive only)
+        if ($ready) {
+            Start-Process $url
+            Write-Host "  Browser opened!" -ForegroundColor Green
+        } else {
+            Write-Host "  Once it's ready, open: $url" -ForegroundColor Cyan
+        }
+        Write-Host ""
+
+        # --- Getting Started Checklist ---
+        Write-Host "----------------------------------------" -ForegroundColor Cyan
+        Write-Host "   Getting Started" -ForegroundColor Cyan
+        Write-Host "----------------------------------------" -ForegroundColor Cyan
+        Write-Host ""
+        Write-Host "  [1] Open the web UI and say hello!" -ForegroundColor White
+        Write-Host "      $url" -ForegroundColor Gray
+        Write-Host ""
+        Write-Host "  [2] Give your AI a name and personality" -ForegroundColor White
+        Write-Host "      Edit SOUL.md in the workspace to customize" -ForegroundColor Gray
+        Write-Host ""
+
+        if ($ChannelType -eq "none") {
+            Write-Host "  [3] Add a messaging channel (optional)" -ForegroundColor White
+            Write-Host "      Re-run with -ChannelType discord|telegram|signal" -ForegroundColor Gray
+            Write-Host "      Or configure manually in openclaw.json" -ForegroundColor Gray
+        } else {
+            Write-Host "  [3] $ChannelType is pre-configured" -ForegroundColor White
+            if ($ChannelToken -eq "") {
+                Write-Host "      Add your bot token to: $installDir\config\openclaw.json" -ForegroundColor Gray
+            } else {
+                Write-Host "      Should be connected once the gateway starts" -ForegroundColor Gray
+            }
+        }
+        Write-Host ""
+        Write-Host "  [4] Check status anytime" -ForegroundColor White
+        Write-Host "      cd $installDir && docker compose logs -f" -ForegroundColor Gray
+        Write-Host ""
+        Write-Host "  [5] Stop / restart" -ForegroundColor White
+        Write-Host "      cd $installDir && docker compose down" -ForegroundColor Gray
+        Write-Host "      cd $installDir && docker compose up -d" -ForegroundColor Gray
+        Write-Host ""
+        Write-Host "  Need help? Check TROUBLESHOOTING.md or ask in Discord" -ForegroundColor Yellow
+        Write-Host ""
+    }
 
     # Clean up install state and reminder task
     Remove-Item "$env:USERPROFILE\.openclaw-install-state.json" -Force -ErrorAction SilentlyContinue
