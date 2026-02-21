@@ -123,6 +123,63 @@ Something not working? Don't panic. Most issues have simple fixes. Find your pro
 
 ---
 
+
+
+---
+
+## Frequently Asked Questions
+
+### Q: How long does the first install take?
+**A:** 2-5 minutes on a decent internet connection. The installer downloads Docker (~500MB if not installed), then pulls the Node.js container image (~350MB), and finally installs OpenClaw via npm. Subsequent starts are much faster (~10 seconds).
+
+### Q: Do I need admin/elevated permissions?
+**A:** Only if WSL2 or Docker Desktop aren't already installed. The installer will tell you if it needs admin rights. Once Docker is set up, no admin required.
+
+### Q: Can I install on a machine without internet?
+**A:** No — the installer needs to download Docker, container images, and the OpenClaw npm package. You need internet for the initial install and for AI responses (they go through GitHub Copilot or Azure OpenAI).
+
+### Q: What if my Copilot token starts with `ghu_` vs `gho_`?
+**A:** Both work. `ghu_` is a user token, `gho_` is an organization token. The installer accepts either. If your token doesn't start with `ghu_` or `gho_`, double-check you copied the right one.
+
+### Q: Can I change the port from 18789?
+**A:** Yes. Edit `docker-compose.yml` in your install folder (`%USERPROFILE%\openclaw\`) and change `"18789:18789"` to `"YOUR_PORT:18789"`. Then restart: `docker compose restart`.
+
+### Q: Where is my data stored?
+**A:** In Docker named volumes (`openclaw-config` and `openclaw-workspace`). These survive container restarts and updates. They're only deleted if you explicitly run `docker compose down -v`. Your config files are also in `%USERPROFILE%\openclaw\config\`.
+
+### Q: How do I update OpenClaw?
+**A:** Run these commands in your install directory:
+```
+docker compose down
+docker compose up -d
+```
+The container reinstalls the latest OpenClaw on every start.
+
+### Q: Can I run multiple OpenClaw instances?
+**A:** Yes, but each needs different ports. Copy the install directory, change the ports in `docker-compose.yml`, and use a different container name.
+
+### Q: The installer said "Token looks too short"
+**A:** Your token needs to be at least 10 characters. Make sure you copied the entire token — they're usually 40+ characters starting with `ghu_`.
+
+### Q: PowerShell says "running scripts is disabled on this system"
+**A:** Windows blocks scripts by default. Run this first (as Administrator):
+```powershell
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+```
+Then try the install command again.
+
+### Q: How do I completely uninstall?
+**A:** Run in PowerShell:
+```powershell
+cd $env:USERPROFILE\openclaw
+docker compose down -v
+cd ..
+Remove-Item -Recurse -Force openclaw
+```
+This stops containers, removes volumes (all data), and deletes the install directory.
+
+### Q: My antivirus flagged the installer
+**A:** The installer is a PowerShell script that downloads software from official sources (Docker, npm). Some antivirus tools flag PowerShell downloads. You can review the script source on [GitHub](https://github.com/ProfessorDeGraw/openclaw-friends/blob/main/install.ps1) — it's fully open source.
 ## Still stuck?
 
 Come ask for help — real humans who've been through it:
