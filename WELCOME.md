@@ -6,7 +6,7 @@ No cloud accounts. No subscriptions to manage. Just you and your assistant, read
 
 ## What is this?
 
-OpenClaw is a personal AI assistant that lives on your hardware. It can chat with you, remember things, help you think, and connect to you on WhatsApp, Telegram, Signal, or just right here in the browser.
+OpenClaw is a personal AI assistant that lives on your hardware. It can chat with you, remember things, help you think, and connect to you on Discord — or just right here in the browser.
 
 It gets smarter the more you use it.
 
@@ -19,7 +19,11 @@ It gets smarter the more you use it.
 
 ## Make it yours
 
-Your assistant has a file called `SOUL.md` in its workspace — that's its personality. Edit it to change how it talks, what it cares about, and what kind of assistant it is. Formal? Casual? Snarky? Your call.
+Your assistant has a file called `SOUL.md` in its workspace — that's its personality. You can edit it through the web UI or ask your assistant to update it. Change how it talks, what it cares about, and what kind of assistant it is. Formal? Casual? Snarky? Your call.
+
+## Finding your connection info
+
+The installer saved your URL and token to `CONNECTION-INFO.txt` in your install folder (`%USERPROFILE%\openclaw`). If you lose the browser tab, check there.
 
 ## Get help
 

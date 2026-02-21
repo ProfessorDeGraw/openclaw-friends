@@ -118,12 +118,13 @@ function Install-OpenClaw {
         } catch {}
     }
 
-    # Wait for Docker daemon to be ready (retry up to 60 seconds)
-    Write-Host "  Waiting for Docker to be ready..." -ForegroundColor Yellow
+    # Wait for Docker daemon to be ready (retry up to 2 minutes)
+    Write-Host "  Waiting for Docker to be ready (up to 2 minutes)..." -ForegroundColor Yellow
+    Write-Host "  If Docker Desktop isn't open, please start it now." -ForegroundColor Yellow
     $dockerReady = $false
-    for ($retry = 0; $retry -lt 12; $retry++) {
+    for ($retry = 0; $retry -lt 24; $retry++) {
         try {
-            $null = docker info 2>&1
+            $null = docker version 2>&1
             if ($LASTEXITCODE -eq 0) {
                 $dockerReady = $true
                 break
@@ -135,13 +136,14 @@ function Install-OpenClaw {
                 Start-Process "C:\Program Files\Docker\Docker\Docker Desktop.exe" -ErrorAction SilentlyContinue
             } catch {}
         }
-        Write-Host "  Docker not ready yet... retrying in 5s ($([int](($retry+1)*5))s)" -ForegroundColor Gray
+        $elapsed = [int](($retry + 1) * 5)
+        Write-Host "  Docker not ready yet... retrying in 5s (${elapsed}s / 120s)" -ForegroundColor Gray
         Start-Sleep -Seconds 5
     }
 
     if (-not $dockerReady) {
         Write-Host ""
-        Write-Host "  Docker is not responding after 60 seconds." -ForegroundColor Red
+        Write-Host "  Docker is not responding after 2 minutes." -ForegroundColor Red
         Write-Host "  Please:" -ForegroundColor Yellow
         Write-Host "    1. Open Docker Desktop manually" -ForegroundColor Yellow
         Write-Host "    2. Wait for it to say 'Docker Desktop is running'" -ForegroundColor Yellow
@@ -319,10 +321,11 @@ volumes:
     }
     Pop-Location
 
-    # Wait for gateway to become ready (up to 90 seconds)
-    Write-Host "  Containers started. Waiting for OpenClaw to be ready..." -ForegroundColor Yellow
+    # Wait for gateway to become ready (up to 3 minutes)
+    Write-Host "  Containers started. Waiting for OpenClaw gateway to be ready (up to 3 minutes)..." -ForegroundColor Yellow
+    Write-Host "  First run downloads packages — this is normal." -ForegroundColor Gray
     $ready = $false
-    for ($i = 0; $i -lt 18; $i++) {
+    for ($i = 0; $i -lt 36; $i++) {
         Start-Sleep -Seconds 5
         try {
             $response = Invoke-WebRequest -Uri "http://localhost:18789/" -UseBasicParsing -TimeoutSec 3 2>&1
@@ -331,7 +334,8 @@ volumes:
                 break
             }
         } catch {}
-        Write-Host "  Still starting... ($([int](($i+1)*5))s)" -ForegroundColor Gray
+        $elapsed = [int](($i + 1) * 5)
+        Write-Host "  Still starting... (${elapsed}s / 180s)" -ForegroundColor Gray
     }
 
     if (-not $ready) {
