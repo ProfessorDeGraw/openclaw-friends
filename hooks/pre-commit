@@ -1,0 +1,27 @@
+#!/bin/bash
+# pre-commit hook — block commits containing leaked tokens (ghu_ prefix)
+# Install: cp hooks/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+
+PATTERN="ghu_"
+
+# Check staged files only (not the whole tree)
+if git diff --cached --diff-filter=ACMR -z --name-only | \
+   xargs -0 -r git diff --cached -- | grep -qE "$PATTERN"; then
+    echo ""
+    echo "  🚫 COMMIT BLOCKED — potential token leak detected"
+    echo ""
+    echo "  Pattern found: $PATTERN"
+    echo "  Matches:"
+    git diff --cached --diff-filter=ACMR --name-only | while read f; do
+        git show ":$f" 2>/dev/null | grep -nE "$PATTERN" | while read match; do
+            echo "    $f:$match"
+        done
+    done
+    echo ""
+    echo "  Remove the token before committing."
+    echo "  To bypass (NOT recommended): git commit --no-verify"
+    echo ""
+    exit 1
+fi
+
+exit 0
