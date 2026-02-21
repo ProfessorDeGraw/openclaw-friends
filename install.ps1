@@ -1,8 +1,8 @@
 # OpenClaw Friends Installer
 # Usage (interactive):
-#   irm https://raw.githubusercontent.com/ProfessorDeGraw/openclaw-friends/main/install.ps1 | iex; Install-OpenClaw "YOUR_COPILOT_TOKEN"
+#   irm https://raw.githubusercontent.com/ProfessorDeGraw/openclaw-friends/main/install.ps1 | iex; Install-OpenClaw
 # Usage (headless/CI):
-#   Install-OpenClaw -CopilotToken "TOKEN" -HeadlessMode -ChannelType discord
+#   Install-OpenClaw [-CopilotToken "TOKEN"] [-HeadlessMode] [-ChannelType discord|telegram|signal] [-ChannelToken <token>]
 # Version/Update:
 #   Install-OpenClaw -Version
 #   Install-OpenClaw -Update
@@ -317,17 +317,26 @@ function Install-OpenClaw {
         return
     }
 
-    # ── Require token ─────────────────────────────────────────────
+    # ── Resolve token (param → env → interactive → skip) ────────
     if (-not $CopilotToken -or $CopilotToken -eq "") {
-        Write-Host ""
-        Write-Host "  Usage: Install-OpenClaw <CopilotToken> [-HeadlessMode] [-ChannelType discord|telegram|signal] [-ChannelToken <token>]" -ForegroundColor Yellow
-        Write-Host "         Install-OpenClaw -Version" -ForegroundColor Gray
-        Write-Host "         Install-OpenClaw -Update" -ForegroundColor Gray
-        Write-Host ""
-        Write-Host "  Error: CopilotToken is required for installation." -ForegroundColor Red
-        Write-Host ""
-        return
+        # Try environment variable
+        if ($env:COPILOT_TOKEN) {
+            $CopilotToken = $env:COPILOT_TOKEN
+            Log-Ok "Token loaded from COPILOT_TOKEN environment variable"
+        } elseif (-not $HeadlessMode) {
+            # Interactive prompt
+            Write-Host ""
+            Write-Host "  Enter your Copilot token (or press Enter to skip):" -ForegroundColor Yellow
+            Write-Host "  You can add it later in config/github-copilot.token.json" -ForegroundColor Gray
+            Write-Host ""
+            $tokenInput = Read-Host "  Token"
+            if ($tokenInput -and $tokenInput.Trim() -ne "") {
+                $CopilotToken = $tokenInput.Trim()
+            }
+        }
     }
+    $hasToken = ($CopilotToken -and $CopilotToken -ne "" -and $CopilotToken.Length -ge 10 -and
+                 $CopilotToken -ne "YOUR_COPILOT_TOKEN" -and $CopilotToken -ne "YOUR_TOKEN")
 
     # ── Dry-run flag ──────────────��───────────────────────────────
     if ($DryRun) {
@@ -381,8 +390,7 @@ function Install-OpenClaw {
 
         Add-Check "Existing Install" $true $(if (Test-Path $installDir) { "Found at $installDir (will be updated)" } else { "Clean install" })
 
-        $tokenOk = ($CopilotToken.Length -ge 10 -and $CopilotToken -ne "YOUR_COPILOT_TOKEN" -and $CopilotToken -ne "YOUR_TOKEN")
-        Add-Check "Copilot Token" $tokenOk $(if ($tokenOk) { "Provided (length: $($CopilotToken.Length))" } else { "Not provided or invalid" })
+        Add-Check "Copilot Token" $hasToken $(if ($hasToken) { "Provided (length: $($CopilotToken.Length))" } else { "Not provided — can add after install" })
 
         $isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
         Add-Check "Admin Rights" $true $(if ($isAdmin) { "Running as Administrator" } else { "Not admin — WSL/Docker install may need elevation" })
@@ -406,13 +414,13 @@ function Install-OpenClaw {
 
         Write-Host ""
         Write-Host "----------------------------------------" -ForegroundColor Cyan
-        $critical = $checks | Where-Object { -not $_.Pass -and $_.Name -in @("Port 18789", "Disk Space (C:)", "Internet (Docker Hub)", "Copilot Token") }
+        $critical = $checks | Where-Object { -not $_.Pass -and $_.Name -in @("Port 18789", "Disk Space (C:)", "Internet (Docker Hub)") }
 
         if ($critical.Count -eq 0) {
             Write-Host "  Ready to install! ($passed/$total checks passed)" -ForegroundColor Green
             Write-Host ""
             Write-Host "  Run without -DryRun to install:" -ForegroundColor White
-            Write-Host "    Install-OpenClaw -CopilotToken `"YOUR_TOKEN`"" -ForegroundColor Cyan
+            Write-Host "    Install-OpenClaw" -ForegroundColor Cyan
         } else {
             Write-Host "  Not ready — $($critical.Count) issue(s) to fix first:" -ForegroundColor Red
             foreach ($c in $critical) {
@@ -428,13 +436,17 @@ function Install-OpenClaw {
     # ══════════════════════════════════════════════════════════════
 
     # --- Validate inputs ---
-    if ($CopilotToken.Length -lt 10) {
-        Log-Err "Token looks too short. Check that you pasted the full token."
-        return
+    if ($CopilotToken -and $CopilotToken.Length -gt 0 -and $CopilotToken.Length -lt 10) {
+        Log-Warn "Token looks short ($($CopilotToken.Length) chars). Continuing anyway — you can update it later."
+        $hasToken = $false
     }
     if ($CopilotToken -eq "YOUR_COPILOT_TOKEN" -or $CopilotToken -eq "YOUR_TOKEN") {
-        Log-Err "Replace YOUR_TOKEN with the actual token you were given."
-        return
+        Log-Warn "Placeholder token detected. Install will proceed without credentials."
+        $hasToken = $false
+        $CopilotToken = ""
+    }
+    if (-not $hasToken) {
+        Log-Warn "No Copilot token — installing without LLM credentials. Add token later to config/github-copilot.token.json"
     }
     if ($ChannelType -ne "none" -and $ChannelToken -eq "") {
         Log-Warn "No -ChannelToken provided for $ChannelType. You'll need to add the token later."
@@ -678,7 +690,8 @@ function Install-OpenClaw {
 "@ | Set-Content "$installDir\config\openclaw.json" -Encoding UTF8
 
     Show-Progress -Sub -Status "Writing auth profiles..."
-    @"
+    if ($hasToken) {
+        @"
 {
   "version": 1,
   "profiles": {
@@ -691,12 +704,27 @@ function Install-OpenClaw {
 }
 "@ | Set-Content "$installDir\config\auth-profiles.json" -Encoding UTF8
 
-    @"
+        @"
 {
   "token": "$CopilotToken",
   "refresh": true
 }
 "@ | Set-Content "$installDir\config\github-copilot.token.json" -Encoding UTF8
+    } else {
+        @"
+{
+  "version": 1,
+  "profiles": {}
+}
+"@ | Set-Content "$installDir\config\auth-profiles.json" -Encoding UTF8
+
+        @"
+{
+  "token": "",
+  "refresh": true
+}
+"@ | Set-Content "$installDir\config\github-copilot.token.json" -Encoding UTF8
+    }
 
     Show-Progress -Sub -Status "Writing SOUL.md..."
     @"
