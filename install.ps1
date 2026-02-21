@@ -166,6 +166,91 @@ function Install-OpenClaw {
     $gatewayToken = -join ((65..90) + (97..122) + (48..57) | Get-Random -Count 32 | ForEach-Object { [char]$_ })
     Write-Host "  Token generated" -ForegroundColor Green
 
+    # --- Step 3b: Discord setup (optional) ---
+    Write-Host ""
+    Write-Host "[3b/7] Discord Setup (optional)" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  Want to connect your assistant to Discord?" -ForegroundColor White
+    Write-Host "  You'll need a Discord bot token and a channel ID." -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "  How to get these:" -ForegroundColor Cyan
+    Write-Host "    1. Go to https://discord.com/developers/applications" -ForegroundColor Gray
+    Write-Host "    2. Click 'New Application' and give it a name" -ForegroundColor Gray
+    Write-Host "    3. Go to Bot > click 'Reset Token' > copy the token" -ForegroundColor Gray
+    Write-Host "    4. Under 'Privileged Gateway Intents', enable:" -ForegroundColor Gray
+    Write-Host "       - Message Content Intent" -ForegroundColor Gray
+    Write-Host "       - Server Members Intent" -ForegroundColor Gray
+    Write-Host "    5. Go to OAuth2 > URL Generator" -ForegroundColor Gray
+    Write-Host "       - Scopes: bot" -ForegroundColor Gray
+    Write-Host "       - Permissions: Send Messages, Read Message History" -ForegroundColor Gray
+    Write-Host "       - Copy the URL and open it to invite the bot to your server" -ForegroundColor Gray
+    Write-Host "    6. To get a channel ID: right-click a channel in Discord > Copy Channel ID" -ForegroundColor Gray
+    Write-Host "       (Enable Developer Mode in Discord Settings > Advanced if you don't see this)" -ForegroundColor Gray
+    Write-Host ""
+
+    $DiscordToken = ""
+    $DiscordChannelId = ""
+    $setupDiscord = $false
+
+    $discordChoice = Read-Host "  Set up Discord now? (y/N)"
+    if ($discordChoice -eq "y" -or $discordChoice -eq "Y") {
+        Write-Host ""
+
+        # Prompt for bot token with validation
+        while ($true) {
+            $DiscordToken = Read-Host "  Enter your Discord bot token"
+            $DiscordToken = $DiscordToken.Trim()
+
+            if ([string]::IsNullOrEmpty($DiscordToken)) {
+                Write-Host "  Skipping Discord setup." -ForegroundColor Yellow
+                break
+            }
+            # Discord bot tokens are typically 59-72+ chars with dots
+            if ($DiscordToken.Length -lt 50) {
+                Write-Host "  That token looks too short. Discord bot tokens are usually 59+ characters." -ForegroundColor Red
+                Write-Host "  Make sure you copied the full token from the Bot page." -ForegroundColor Yellow
+                continue
+            }
+            if ($DiscordToken -notmatch "\.") {
+                Write-Host "  That doesn't look like a Discord bot token (should contain dots)." -ForegroundColor Red
+                Write-Host "  Make sure you're using the BOT token, not the client secret." -ForegroundColor Yellow
+                continue
+            }
+            Write-Host "  Token accepted" -ForegroundColor Green
+            break
+        }
+
+        if (-not [string]::IsNullOrEmpty($DiscordToken)) {
+            # Prompt for channel ID with validation
+            while ($true) {
+                $DiscordChannelId = Read-Host "  Enter the Discord channel ID for your bot"
+                $DiscordChannelId = $DiscordChannelId.Trim()
+
+                if ([string]::IsNullOrEmpty($DiscordChannelId)) {
+                    Write-Host "  Skipping Discord setup (need both token and channel)." -ForegroundColor Yellow
+                    $DiscordToken = ""
+                    break
+                }
+                # Channel IDs are numeric, typically 17-20 digits
+                if ($DiscordChannelId -notmatch "^\d{15,22}$") {
+                    Write-Host "  Channel IDs are numbers (like 1234567890123456789)." -ForegroundColor Red
+                    Write-Host "  Right-click a channel in Discord > Copy Channel ID" -ForegroundColor Yellow
+                    continue
+                }
+                Write-Host "  Channel ID accepted" -ForegroundColor Green
+                $setupDiscord = $true
+                break
+            }
+        }
+
+        if ($setupDiscord) {
+            Write-Host "  Discord will be configured!" -ForegroundColor Green
+        }
+    } else {
+        Write-Host "  Skipped. You can add Discord later by editing the config." -ForegroundColor Gray
+    }
+    Write-Host ""
+
     # --- Step 4: Create config files ---
     Write-Host "[4/7] Creating configuration..." -ForegroundColor Yellow
 
@@ -202,7 +287,7 @@ function Install-OpenClaw {
   "tools": {
     "allow": ["group:fs", "group:runtime", "group:sessions", "group:memory", "group:messaging"]
   },
-  "channels": {},
+  "channels": $(if ($setupDiscord) { "{\`"discord\`": {\`"enabled\`": true, \`"token\`": \`"$DiscordToken\`", \`"channels\`": [\`"$DiscordChannelId\`"]}}" } else { "{}" }),
   "models": {
     "mode": "merge",
     "providers": {}
