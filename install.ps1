@@ -13,6 +13,7 @@
 #   -Version          Print installer version and exit
 #   -Update           Check for newer version on GitHub and self-update
 #   -DryRun           Validate prerequisites without installing anything
+#   -Telemetry        Enable anonymous install telemetry (local log only)
 
 function Install-OpenClaw {
     param(
@@ -30,7 +31,9 @@ function Install-OpenClaw {
 
         [switch]$Update,
 
-        [switch]$DryRun
+        [switch]$DryRun,
+
+        [switch]$Telemetry
     )
 
     $ErrorActionPreference = "Stop"
@@ -38,6 +41,32 @@ function Install-OpenClaw {
     $script:INSTALLER_REPO = "ProfessorDeGraw/openclaw-friends"
     $script:INSTALLER_BRANCH = "main"
     $script:INSTALLER_FILE = "install.ps1"
+
+    # --- Telemetry (opt-in only) ---
+    function Send-Telemetry {
+        param(
+            [string]$Event,
+            [hashtable]$Data = @{}
+        )
+        if (-not $Telemetry) { return }
+        try {
+            $payload = @{
+                event = $Event
+                installer_version = $script:INSTALLER_VERSION
+                os = [System.Environment]::OSVersion.VersionString
+                arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+                timestamp = (Get-Date -Format "o")
+                session_id = $script:telemetrySessionId
+            }
+            foreach ($k in $Data.Keys) { $payload[$k] = $Data[$k] }
+            # Write to local telemetry log (no network calls)
+            $logDir = Join-Path $env:TEMP "openclaw-telemetry"
+            if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
+            $logFile = Join-Path $logDir "install-telemetry.jsonl"
+            ($payload | ConvertTo-Json -Compress) | Add-Content $logFile
+        } catch {}
+    }
+    $script:telemetrySessionId = [guid]::NewGuid().ToString("N").Substring(0, 12)
     $installDir = "$env:USERPROFILE\openclaw-friend"
 
     # ══════════════════════════════════════════════════════════════
@@ -860,6 +889,7 @@ Date: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
         }
         Write-Host ""
 
+        Send-Telemetry "install_success" @{ channel = $ChannelType }
         # Getting Started Checklist
         Write-Host "  ── Getting Started ──────────────────────" -ForegroundColor Cyan
         Write-Host ""
