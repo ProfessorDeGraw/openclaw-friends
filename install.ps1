@@ -394,7 +394,10 @@ volumes:
     Log-Step "[6/7] Starting OpenClaw..."
     Push-Location $installDir
     try {
+        Write-Host "  Running from: $(Get-Location)" -ForegroundColor Gray
+        Write-Host "  Directory: $installDir" -ForegroundColor Gray
         $composeOutput = docker compose up -d 2>&1 | Out-String
+        Write-Host $composeOutput -ForegroundColor Gray
         if ($LASTEXITCODE -ne 0) {
             Log-Err "Docker Compose failed to start: $composeOutput"
             Pop-Location
