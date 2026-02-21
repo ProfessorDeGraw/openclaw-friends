@@ -22,7 +22,7 @@ function Install-OpenClaw {
     )
 
     $ErrorActionPreference = "Stop"
-    $installDir = "$env:USERPROFILE\openclaw"
+    $installDir = "$env:USERPROFILE\openclaw-friend"
 
     # --- Output helpers (respect headless mode) ---
     function Log-Step  { param([string]$msg) if (-not $HeadlessMode) { Write-Host $msg -ForegroundColor Yellow } }
