@@ -150,7 +150,23 @@ function Install-OpenClaw {
     }
 
     # --- Output helpers (respect headless mode) ---
-    function Log-Step  { param([string]$msg) if (-not $HeadlessMode) { Write-Host $msg -ForegroundColor Yellow } }
+    function Log-Step {
+        param([string]$msg)
+        if ($HeadlessMode) { return }
+        # Extract step number from "[X/7]" pattern
+        if ($msg -match "\[(\d+)/(\d+)\]") {
+            $current = [int]$Matches[1]
+            $total = [int]$Matches[2]
+            $pct = [math]::Floor(($current / $total) * 100)
+            $barLen = 20
+            $filled = [math]::Floor(($current / $total) * $barLen)
+            $empty = $barLen - $filled
+            $bar = ("█" * $filled) + ("░" * $empty)
+            Write-Host ""
+            Write-Host "  [$bar] $pct% ($current/$total)" -ForegroundColor Cyan
+        }
+        Write-Host $msg -ForegroundColor Yellow
+    }
     function Log-Ok    { param([string]$msg) if (-not $HeadlessMode) { Write-Host "  $msg" -ForegroundColor Green } }
     function Log-Warn  { param([string]$msg) if (-not $HeadlessMode) { Write-Host "  $msg" -ForegroundColor Yellow } }
     function Log-Err   { param([string]$msg) Write-Host "  ERROR: $msg" -ForegroundColor Red }
@@ -808,6 +824,11 @@ Date: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
         } else {
             Write-Host "  Once it's ready, open: $url" -ForegroundColor Cyan
         }
+        Write-Host ""
+
+        # --- Final progress bar ---
+        Write-Host ""
+        Write-Host "  [████████████████████] 100% (7/7)" -ForegroundColor Green
         Write-Host ""
 
         # --- Getting Started Checklist ---
