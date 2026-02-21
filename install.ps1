@@ -34,11 +34,169 @@ function Install-OpenClaw {
     )
 
     $ErrorActionPreference = "Stop"
-    $script:INSTALLER_VERSION = "1.0.0"
+    $script:INSTALLER_VERSION = "1.1.0"
     $script:INSTALLER_REPO = "ProfessorDeGraw/openclaw-friends"
     $script:INSTALLER_BRANCH = "main"
     $script:INSTALLER_FILE = "install.ps1"
     $installDir = "$env:USERPROFILE\openclaw-friend"
+
+    # ══════════════════════════════════════════════════════════════
+    # Progress Bar System
+    # ══════════════════════════════════════════════════════════════
+
+    $script:Steps = @(
+        @{ Name = "Prerequisites";      Desc = "Checking Docker & WSL2" }
+        @{ Name = "Directory";           Desc = "Creating install directory" }
+        @{ Name = "Security";            Desc = "Generating gateway token" }
+        @{ Name = "Configuration";       Desc = "Writing config files" }
+        @{ Name = "Docker Compose";      Desc = "Creating container setup" }
+        @{ Name = "Launch";              Desc = "Starting containers" }
+        @{ Name = "Ready";               Desc = "Verifying gateway" }
+    )
+    $script:TotalSteps = $script:Steps.Count
+    $script:CurrentStep = 0
+    $script:StepStartTime = $null
+    $script:InstallStartTime = Get-Date
+    $script:BarWidth = 30
+
+    function Show-Progress {
+        <#
+        .SYNOPSIS
+            Render a visual progress bar with step name, percentage, and elapsed time.
+        #>
+        param(
+            [int]$Step,
+            [string]$Status = "",
+            [switch]$Sub,        # indented sub-status (no bar redraw)
+            [switch]$Complete    # final 100% bar
+        )
+
+        if ($HeadlessMode) { return }
+
+        if ($Complete) {
+            $pct = 100
+            $filled = $script:BarWidth
+            $empty = 0
+            $elapsed = ((Get-Date) - $script:InstallStartTime).TotalSeconds
+            $timeStr = "{0:N0}s total" -f $elapsed
+            $stepLabel = "Installation complete"
+            $bar = ("█" * $filled)
+            Write-Host ""
+            Write-Host "  ┌──────────────────────────────────────┐" -ForegroundColor Green
+            Write-Host "  │ $bar │ 100%" -ForegroundColor Green
+            Write-Host "  └──────────────────────────────────────┘" -ForegroundColor Green
+            Write-Host "  ✓ $stepLabel ($timeStr)" -ForegroundColor Green
+            Write-Host ""
+            return
+        }
+
+        if ($Sub) {
+            # Sub-status line (no bar, just indented info)
+            if ($Status) {
+                Write-Host "    › $Status" -ForegroundColor Gray
+            }
+            return
+        }
+
+        $script:CurrentStep = $Step
+        $script:StepStartTime = Get-Date
+
+        $pct = [math]::Floor(($Step / $script:TotalSteps) * 100)
+        $filled = [math]::Floor(($Step / $script:TotalSteps) * $script:BarWidth)
+        $empty = $script:BarWidth - $filled
+        $bar = ("█" * $filled) + ("░" * $empty)
+
+        $stepInfo = $script:Steps[$Step - 1]
+        $stepLabel = $stepInfo.Name
+        $stepDesc = $stepInfo.Desc
+        if ($Status) { $stepDesc = $Status }
+
+        $elapsed = ((Get-Date) - $script:InstallStartTime).TotalSeconds
+        $timeStr = "{0:N0}s" -f $elapsed
+
+        Write-Host ""
+        Write-Host "  ┌──────────────────────────────────────┐" -ForegroundColor Cyan
+        Write-Host "  │ $bar │ $pct%" -ForegroundColor Cyan
+        Write-Host "  └──────────────────────────────────────┘" -ForegroundColor Cyan
+        Write-Host "  [$Step/$script:TotalSteps] $stepLabel — $stepDesc ($timeStr)" -ForegroundColor Yellow
+    }
+
+    function Show-WaitProgress {
+        <#
+        .SYNOPSIS
+            Show a waiting spinner/counter for long-running sub-operations.
+        #>
+        param(
+            [int]$Current,
+            [int]$Max,
+            [string]$Label
+        )
+        if ($HeadlessMode) { return }
+
+        $waitPct = [math]::Floor(($Current / $Max) * 100)
+        $miniLen = 10
+        $miniFilled = [math]::Floor(($Current / $Max) * $miniLen)
+        $miniEmpty = $miniLen - $miniFilled
+        $miniBar = ("▓" * $miniFilled) + ("░" * $miniEmpty)
+        Write-Host "    ⏳ [$miniBar] ${Current}s/${Max}s — $Label" -ForegroundColor Gray
+    }
+
+    # ══════════════════════════════════════════════════════════════
+    # Output Helpers
+    # ══════════════════════════════════════════════════════════════
+
+    function Log-Ok    { param([string]$msg) if (-not $HeadlessMode) { Write-Host "    ✓ $msg" -ForegroundColor Green } }
+    function Log-Warn  { param([string]$msg) if (-not $HeadlessMode) { Write-Host "    ⚠ $msg" -ForegroundColor Yellow } }
+    function Log-Err   { param([string]$msg) Write-Host "    ✗ ERROR: $msg" -ForegroundColor Red }
+    function Log-Info  { param([string]$msg) if (-not $HeadlessMode) { Write-Host "    $msg" -ForegroundColor Cyan } }
+    function Log-Gray  { param([string]$msg) if (-not $HeadlessMode) { Write-Host "    $msg" -ForegroundColor Gray } }
+
+    # ── Checksum verification helper ──
+    function Verify-FileChecksum {
+        param(
+            [string]$FilePath,
+            [string]$ExpectedHash,
+            [string]$Algorithm = "SHA256"
+        )
+        if (-not $ExpectedHash) { return $true }
+        if (-not (Test-Path $FilePath)) { return $false }
+        $actual = (Get-FileHash -Path $FilePath -Algorithm $Algorithm).Hash
+        if ($actual -eq $ExpectedHash) {
+            Log-Ok "Checksum verified ($Algorithm)"
+            return $true
+        } else {
+            Log-Warn "Checksum mismatch! Expected: $ExpectedHash"
+            Log-Warn "                   Got:      $actual"
+            return $false
+        }
+    }
+
+    function Verify-ConfigIntegrity {
+        param([string]$Dir)
+        $issues = @()
+        Get-ChildItem "$Dir\config\*.json" -ErrorAction SilentlyContinue | ForEach-Object {
+            try {
+                $null = Get-Content $_.FullName -Raw | ConvertFrom-Json
+            } catch {
+                $issues += "Invalid JSON: $($_.Name)"
+            }
+        }
+        $composePath = "$Dir\docker-compose.yml"
+        if (Test-Path $composePath) {
+            $content = Get-Content $composePath -Raw
+            if ($content.Length -lt 100) {
+                $issues += "docker-compose.yml appears truncated ($($content.Length) bytes)"
+            }
+            if ($content -notmatch "openclaw") {
+                $issues += "docker-compose.yml missing openclaw service"
+            }
+        }
+        return $issues
+    }
+
+    # ══════════════════════════════════════════════════════════════
+    # Version / Update / DryRun (unchanged logic, abbreviated)
+    # ══════════════════════════════════════════════════════════════
 
     # ── Version flag ──────────────────────────────────────────────
     if ($Version) {
@@ -54,10 +212,8 @@ function Install-OpenClaw {
         $remoteUrl = "https://raw.githubusercontent.com/$($script:INSTALLER_REPO)/$($script:INSTALLER_BRANCH)/$($script:INSTALLER_FILE)"
 
         try {
-            # Fetch remote script
             $remoteScript = (Invoke-WebRequest -Uri $remoteUrl -UseBasicParsing -TimeoutSec 15).Content
 
-            # Extract remote version
             $remoteVersion = "unknown"
             if ($remoteScript -match 'INSTALLER_VERSION\s*=\s*"([^"]+)"') {
                 $remoteVersion = $Matches[1]
@@ -73,7 +229,6 @@ function Install-OpenClaw {
                 return
             }
 
-            # Compare versions (simple semver: split on dots, compare numerically)
             function Compare-SemVer {
                 param([string]$a, [string]$b)
                 $aParts = $a.Split('.') | ForEach-Object { [int]$_ }
@@ -98,9 +253,7 @@ function Install-OpenClaw {
             Write-Host ""
             Write-Host "  New version available: v$($script:INSTALLER_VERSION) -> v$remoteVersion" -ForegroundColor Yellow
 
-            # Determine where this script lives on disk
             $scriptPath = ""
-            # If loaded via irm | iex, we won't have a file path — save to default location
             $defaultPath = Join-Path $installDir "install.ps1"
 
             if ($MyInvocation.ScriptName -and (Test-Path $MyInvocation.ScriptName)) {
@@ -111,14 +264,12 @@ function Install-OpenClaw {
                 $scriptPath = $defaultPath
             }
 
-            # Back up current version
             if (Test-Path $scriptPath) {
                 $backupPath = "$scriptPath.bak"
                 Copy-Item -Path $scriptPath -Destination $backupPath -Force
                 Write-Host "  Backed up current: $backupPath" -ForegroundColor Gray
             }
 
-            # Write new version
             New-Item -ItemType Directory -Force -Path (Split-Path $scriptPath) | Out-Null
             $remoteScript | Set-Content -Path $scriptPath -Encoding UTF8
             Write-Host "  Updated: $scriptPath" -ForegroundColor Green
@@ -137,7 +288,7 @@ function Install-OpenClaw {
         return
     }
 
-    # ── Require token for install ─────────────────────────────────
+    # ── Require token ─────────────────────────────────────────────
     if (-not $CopilotToken -or $CopilotToken -eq "") {
         Write-Host ""
         Write-Host "  Usage: Install-OpenClaw <CopilotToken> [-HeadlessMode] [-ChannelType discord|telegram|signal] [-ChannelToken <token>]" -ForegroundColor Yellow
@@ -149,84 +300,7 @@ function Install-OpenClaw {
         return
     }
 
-    # --- Output helpers (respect headless mode) ---
-    function Log-Step {
-        param([string]$msg)
-        if ($HeadlessMode) { return }
-        # Extract step number from "[X/7]" pattern
-        if ($msg -match "\[(\d+)/(\d+)\]") {
-            $current = [int]$Matches[1]
-            $total = [int]$Matches[2]
-            $pct = [math]::Floor(($current / $total) * 100)
-            $barLen = 20
-            $filled = [math]::Floor(($current / $total) * $barLen)
-            $empty = $barLen - $filled
-            $bar = ("█" * $filled) + ("░" * $empty)
-            Write-Host ""
-            Write-Host "  [$bar] $pct% ($current/$total)" -ForegroundColor Cyan
-        }
-        Write-Host $msg -ForegroundColor Yellow
-    }
-    function Log-Ok    { param([string]$msg) if (-not $HeadlessMode) { Write-Host "  $msg" -ForegroundColor Green } }
-    function Log-Warn  { param([string]$msg) if (-not $HeadlessMode) { Write-Host "  $msg" -ForegroundColor Yellow } }
-    function Log-Err   { param([string]$msg) Write-Host "  ERROR: $msg" -ForegroundColor Red }
-    function Log-Info  { param([string]$msg) if (-not $HeadlessMode) { Write-Host "  $msg" -ForegroundColor Cyan } }
-    function Log-Gray  { param([string]$msg) if (-not $HeadlessMode) { Write-Host "  $msg" -ForegroundColor Gray } }
-
-    # --- Checksum verification helper ---
-    function Verify-FileChecksum {
-        param(
-            [string]$FilePath,
-            [string]$ExpectedHash,
-            [string]$Algorithm = "SHA256"
-        )
-        if (-not $ExpectedHash) { return $true }  # No hash provided, skip
-        if (-not (Test-Path $FilePath)) { return $false }
-        $actual = (Get-FileHash -Path $FilePath -Algorithm $Algorithm).Hash
-        if ($actual -eq $ExpectedHash) {
-            Log-Ok "Checksum verified ($Algorithm)"
-            return $true
-        } else {
-            Log-Warn "Checksum mismatch! Expected: $ExpectedHash"
-            Log-Warn "                   Got:      $actual"
-            return $false
-        }
-    }
-
-    function Verify-ConfigIntegrity {
-        param([string]$Dir)
-        $issues = @()
-        # Verify JSON files are valid
-        Get-ChildItem "$Dir\config\*.json" -ErrorAction SilentlyContinue | ForEach-Object {
-            try {
-                $null = Get-Content $_.FullName -Raw | ConvertFrom-Json
-            } catch {
-                $issues += "Invalid JSON: $($_.Name)"
-            }
-        }
-        # Verify docker-compose.yml exists and has content
-        $composePath = "$Dir\docker-compose.yml"
-        if (Test-Path $composePath) {
-            $content = Get-Content $composePath -Raw
-            if ($content.Length -lt 100) {
-                $issues += "docker-compose.yml appears truncated ($($content.Length) bytes)"
-            }
-            if ($content -notmatch "openclaw") {
-                $issues += "docker-compose.yml missing openclaw service"
-            }
-        }
-        return $issues
-    }
-
-    if (-not $HeadlessMode) {
-        Write-Host ""
-        Write-Host "========================================" -ForegroundColor Cyan
-        Write-Host "   OpenClaw Installer (Friends Edition)" -ForegroundColor Cyan
-        Write-Host "========================================" -ForegroundColor Cyan
-        Write-Host ""
-    }
-
-    # ── Dry-run flag ─────────────────────────────────────────────
+    # ── Dry-run flag ──────────────��───────────────────────────────
     if ($DryRun) {
         Write-Host ""
         Write-Host "========================================" -ForegroundColor Cyan
@@ -243,92 +317,52 @@ function Install-OpenClaw {
             if (-not $Pass) { $script:allPassed = $false }
         }
 
-        # --- Check 1: OS ---
         try {
             $build = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion").CurrentBuild
-            $isWin11 = [int]$build -ge 22000
             $osName = (Get-CimInstance Win32_OperatingSystem).Caption
             Add-Check "Operating System" $true "$osName (build $build)"
-        } catch {
-            Add-Check "Operating System" $true "Could not detect version (non-critical)"
-        }
+        } catch { Add-Check "Operating System" $true "Could not detect version (non-critical)" }
 
-        # --- Check 2: PowerShell ---
         $psVer = $PSVersionTable.PSVersion
         Add-Check "PowerShell" ($psVer.Major -ge 5) "v$psVer"
 
-        # --- Check 3: WSL2 ---
         $wslOk = $false
-        try {
-            $null = wsl --status 2>&1
-            if ($LASTEXITCODE -eq 0) { $wslOk = $true }
-        } catch {}
-        Add-Check "WSL2" $wslOk $(if ($wslOk) { "Installed and available" } else { "Not found — installer will set it up (requires restart)" })
+        try { $null = wsl --status 2>&1; if ($LASTEXITCODE -eq 0) { $wslOk = $true } } catch {}
+        Add-Check "WSL2" $wslOk $(if ($wslOk) { "Installed" } else { "Not found — installer will set it up" })
 
-        # --- Check 4: Docker ---
-        $dockerOk = $false
-        $dockerVer = ""
-        try {
-            $dockerVer = docker version --format '{{.Server.Version}}' 2>&1
-            if ($LASTEXITCODE -eq 0) { $dockerOk = $true }
-        } catch {}
+        $dockerOk = $false; $dockerVer = ""
+        try { $dockerVer = docker version --format '{{.Server.Version}}' 2>&1; if ($LASTEXITCODE -eq 0) { $dockerOk = $true } } catch {}
         Add-Check "Docker Engine" $dockerOk $(if ($dockerOk) { "v$dockerVer" } else { "Not found — installer will download Docker Desktop" })
 
-        # --- Check 5: Docker Compose ---
         $composeOk = $false
-        try {
-            $composeVer = docker compose version --short 2>&1
-            if ($LASTEXITCODE -eq 0) { $composeOk = $true }
-        } catch {}
+        try { $composeVer = docker compose version --short 2>&1; if ($LASTEXITCODE -eq 0) { $composeOk = $true } } catch {}
         Add-Check "Docker Compose" $composeOk $(if ($composeOk) { "v$composeVer" } else { "Not available (comes with Docker Desktop)" })
 
-        # --- Check 6: Port 18789 ---
         $portFree = $true
-        try {
-            $listeners = netstat -ano 2>$null | Select-String ":18789\s"
-            if ($listeners) { $portFree = $false }
-        } catch {}
-        Add-Check "Port 18789" $portFree $(if ($portFree) { "Available" } else { "IN USE — another service is using this port" })
+        try { $listeners = netstat -ano 2>$null | Select-String ":18789\s"; if ($listeners) { $portFree = $false } } catch {}
+        Add-Check "Port 18789" $portFree $(if ($portFree) { "Available" } else { "IN USE" })
 
-        # --- Check 7: Disk space ---
         $drive = Get-PSDrive C -ErrorAction SilentlyContinue
         $freeGB = if ($drive) { [math]::Round($drive.Free / 1GB, 1) } else { 0 }
-        $diskOk = $freeGB -ge 5
-        Add-Check "Disk Space (C:)" $diskOk "${freeGB}GB free $(if ($diskOk) { '(need 5GB+)' } else { '— need at least 5GB' })"
+        Add-Check "Disk Space (C:)" ($freeGB -ge 5) "${freeGB}GB free (need 5GB+)"
 
-        # --- Check 8: Internet ---
         $netOk = $false
-        try {
-            $r = Invoke-WebRequest -Uri "https://registry.hub.docker.com/" -UseBasicParsing -TimeoutSec 10 -ErrorAction Stop
-            if ($r.StatusCode -eq 200) { $netOk = $true }
-        } catch {}
-        Add-Check "Internet (Docker Hub)" $netOk $(if ($netOk) { "Reachable" } else { "Cannot reach Docker Hub — check connection/firewall" })
+        try { $r = Invoke-WebRequest -Uri "https://registry.hub.docker.com/" -UseBasicParsing -TimeoutSec 10 -ErrorAction Stop; if ($r.StatusCode -eq 200) { $netOk = $true } } catch {}
+        Add-Check "Internet (Docker Hub)" $netOk $(if ($netOk) { "Reachable" } else { "Cannot reach Docker Hub" })
 
-        # --- Check 9: Existing install ---
-        $existsAlready = Test-Path $installDir
-        Add-Check "Existing Install" $true $(if ($existsAlready) { "Found at $installDir (will be updated)" } else { "Clean — no previous install" })
+        Add-Check "Existing Install" $true $(if (Test-Path $installDir) { "Found at $installDir (will be updated)" } else { "Clean install" })
 
-        # --- Check 10: Token ---
-        $tokenOk = $false
-        if ($CopilotToken.Length -ge 10 -and $CopilotToken -ne "YOUR_COPILOT_TOKEN" -and $CopilotToken -ne "YOUR_TOKEN") {
-            $tokenOk = $true
-        }
-        Add-Check "Copilot Token" $tokenOk $(if ($tokenOk) { "Provided (length: $($CopilotToken.Length))" } else { "Not provided or invalid — pass -CopilotToken" })
+        $tokenOk = ($CopilotToken.Length -ge 10 -and $CopilotToken -ne "YOUR_COPILOT_TOKEN" -and $CopilotToken -ne "YOUR_TOKEN")
+        Add-Check "Copilot Token" $tokenOk $(if ($tokenOk) { "Provided (length: $($CopilotToken.Length))" } else { "Not provided or invalid" })
 
-        # --- Check 11: Admin rights ---
         $isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
         Add-Check "Admin Rights" $true $(if ($isAdmin) { "Running as Administrator" } else { "Not admin — WSL/Docker install may need elevation" })
 
-        # --- Check 12: RAM ---
         try {
             $totalRAM = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 1)
-            $ramOk = $totalRAM -ge 4
-            Add-Check "System RAM" $ramOk "${totalRAM}GB $(if ($ramOk) { '(4GB+ recommended)' } else { '— may be tight, 4GB+ recommended' })"
-        } catch {
-            Add-Check "System RAM" $true "Could not detect (non-critical)"
-        }
+            Add-Check "System RAM" ($totalRAM -ge 4) "${totalRAM}GB (4GB+ recommended)"
+        } catch { Add-Check "System RAM" $true "Could not detect" }
 
-        # --- Print results ---
         Write-Host ""
         $passed = ($checks | Where-Object { $_.Pass }).Count
         $total = $checks.Count
@@ -343,18 +377,11 @@ function Install-OpenClaw {
 
         Write-Host ""
         Write-Host "----------------------------------------" -ForegroundColor Cyan
-
         $critical = $checks | Where-Object { -not $_.Pass -and $_.Name -in @("Port 18789", "Disk Space (C:)", "Internet (Docker Hub)", "Copilot Token") }
 
         if ($critical.Count -eq 0) {
             Write-Host "  Ready to install! ($passed/$total checks passed)" -ForegroundColor Green
             Write-Host ""
-            $blockers = $checks | Where-Object { -not $_.Pass }
-            if ($blockers.Count -gt 0) {
-                Write-Host "  Note: $(($blockers | ForEach-Object { $_.Name }) -join ', ') not detected" -ForegroundColor Yellow
-                Write-Host "  but the installer will handle $(if ($blockers.Count -eq 1) { 'it' } else { 'them' }) automatically." -ForegroundColor Yellow
-                Write-Host ""
-            }
             Write-Host "  Run without -DryRun to install:" -ForegroundColor White
             Write-Host "    Install-OpenClaw -CopilotToken `"YOUR_TOKEN`"" -ForegroundColor Cyan
         } else {
@@ -363,12 +390,15 @@ function Install-OpenClaw {
                 Write-Host "    • $($c.Name): $($c.Detail)" -ForegroundColor Red
             }
         }
-
         Write-Host ""
         return
     }
 
-    # --- Validate token format ---
+    # ══════════════════════════════════════════════════════════════
+    # Main Installation Flow
+    # ══════════════════════════════════════════════════════════════
+
+    # --- Validate inputs ---
     if ($CopilotToken.Length -lt 10) {
         Log-Err "Token looks too short. Check that you pasted the full token."
         return
@@ -377,26 +407,32 @@ function Install-OpenClaw {
         Log-Err "Replace YOUR_TOKEN with the actual token you were given."
         return
     }
-
-    # --- Validate channel config ---
     if ($ChannelType -ne "none" -and $ChannelToken -eq "") {
-        Log-Warn "No -ChannelToken provided for $ChannelType. Channel will be configured but you'll need to add the token later."
+        Log-Warn "No -ChannelToken provided for $ChannelType. You'll need to add the token later."
     }
 
-    # --- Step 1: Check prerequisites ---
-    Log-Step "[1/7] Checking prerequisites..."
+    if (-not $HeadlessMode) {
+        Write-Host ""
+        Write-Host "  ╔══════════════════════════════════════╗" -ForegroundColor Cyan
+        Write-Host "  ║   OpenClaw Installer (Friends Ed.)   ║" -ForegroundColor Cyan
+        Write-Host "  ╚══════════════════════════════════════╝" -ForegroundColor Cyan
+    }
 
-    # Check if WSL2 is available
+    # ──────────────────────────────────────────────────────────────
+    # Step 1: Prerequisites
+    # ────────────────────────���─────────────────────────────────────
+    Show-Progress -Step 1
+
+    # Check WSL2
+    Show-Progress -Sub -Status "Checking WSL2..."
     $wslInstalled = $false
     try {
         $wslOutput = wsl --status 2>&1 | Out-String
         if ($LASTEXITCODE -eq 0) { $wslInstalled = $true }
-    } catch {
-        # wsl command not found at all
-    }
+    } catch {}
 
     if (-not $wslInstalled) {
-        Log-Warn "WSL2 not found. Installing..."
+        Show-Progress -Sub -Status "Installing WSL2..."
         try {
             wsl --install --no-distribution 2>&1 | Out-Null
             if ($LASTEXITCODE -ne 0) {
@@ -405,7 +441,6 @@ function Install-OpenClaw {
             }
         } catch {
             Log-Err "WSL2 install failed: $_"
-            Log-Warn "Try running PowerShell as Administrator."
             return
         }
 
@@ -413,28 +448,21 @@ function Install-OpenClaw {
             Write-Host "REBOOT_REQUIRED"
         } else {
             Write-Host ""
-            Write-Host "  WSL2 installed! You need to RESTART your computer." -ForegroundColor Red
-            Write-Host "  After restart, run this command again." -ForegroundColor Red
+            Write-Host "    WSL2 installed! You need to RESTART your computer." -ForegroundColor Red
+            Write-Host "    After restart, run this command again." -ForegroundColor Red
             Write-Host ""
         }
-
-        # Try to register a reminder (non-critical, don't fail if no admin)
-        if (-not $HeadlessMode) {
-            try {
-                $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -Command `"Write-Host 'Run your OpenClaw installer again after restart!' -ForegroundColor Cyan; Start-Sleep 10`""
-                $trigger = New-ScheduledTaskTrigger -AtLogon
-                Register-ScheduledTask -TaskName "OpenClaw-Reminder" -Action $action -Trigger $trigger -Force | Out-Null
-                Log-Gray "(A reminder will appear after you log back in)"
-            } catch {
-                Log-Warn "Reminder: run the install command again after reboot."
-            }
-        }
-
+        try {
+            $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -Command `"Write-Host 'Run your OpenClaw installer again after restart!' -ForegroundColor Cyan; Start-Sleep 10`""
+            $trigger = New-ScheduledTaskTrigger -AtLogon
+            Register-ScheduledTask -TaskName "OpenClaw-Reminder" -Action $action -Trigger $trigger -Force | Out-Null
+        } catch {}
         return
     }
     Log-Ok "WSL2: OK"
 
-    # Check if Docker is available and running
+    # Check Docker
+    Show-Progress -Sub -Status "Checking Docker..."
     $dockerInstalled = $false
     $dockerVersion = ""
     try {
@@ -443,31 +471,27 @@ function Install-OpenClaw {
     } catch {}
 
     if (-not $dockerInstalled) {
-        Log-Warn "Docker not found. Installing Docker Desktop..."
+        Show-Progress -Sub -Status "Installing Docker Desktop..."
 
         $installed = $false
-
-        # Try winget first
         try {
             $null = winget --version 2>&1
             if ($LASTEXITCODE -eq 0) {
-                Log-Warn "Installing via winget..."
+                Show-Progress -Sub -Status "Installing via winget..."
                 winget install -e --id Docker.DockerDesktop --accept-source-agreements --accept-package-agreements 2>&1 | Out-Null
                 if ($LASTEXITCODE -eq 0) { $installed = $true }
             }
         } catch {}
 
-        # Fall back to direct download
         if (-not $installed) {
             $dockerUrl = "https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe"
             $dockerInstaller = "$env:TEMP\DockerDesktopInstaller.exe"
-            Log-Warn "Downloading Docker Desktop (this may take a few minutes)..."
+            Show-Progress -Sub -Status "Downloading Docker Desktop..."
             try {
                 Invoke-WebRequest -Uri $dockerUrl -OutFile $dockerInstaller -UseBasicParsing
-                Log-Info "Verifying download integrity..."
-                $hashOk = Verify-FileChecksum -FilePath $dockerInstaller -Algorithm "SHA256"  # No pinned hash — just log the hash
                 $dlHash = (Get-FileHash -Path $dockerInstaller -Algorithm SHA256).Hash
-                Log-Gray "  SHA256: $dlHash"
+                Log-Gray "SHA256: $dlHash"
+                Show-Progress -Sub -Status "Running Docker installer..."
                 Start-Process -FilePath $dockerInstaller -ArgumentList "install", "--quiet", "--accept-license" -Wait
                 Remove-Item $dockerInstaller -Force -ErrorAction SilentlyContinue
                 $installed = $true
@@ -478,18 +502,17 @@ function Install-OpenClaw {
             }
         }
 
-        Log-Ok "Docker Desktop installed! Trying to start it..."
-        try {
-            Start-Process "C:\Program Files\Docker\Docker\Docker Desktop.exe" -ErrorAction SilentlyContinue
-        } catch {}
+        Show-Progress -Sub -Status "Starting Docker Desktop..."
+        try { Start-Process "C:\Program Files\Docker\Docker\Docker Desktop.exe" -ErrorAction SilentlyContinue } catch {}
     }
 
-    # Wait for Docker daemon to be ready (retry up to 2 minutes)
-    Log-Step "  Waiting for Docker to be ready (up to 2 minutes)..."
-    if (-not $HeadlessMode) {
+    # Wait for Docker daemon (up to 2 minutes)
+    Show-Progress -Sub -Status "Waiting for Docker daemon..."
+    if (-not $HeadlessMode -and -not $dockerInstalled) {
         Log-Warn "If Docker Desktop isn't open, please start it now."
     }
     $dockerReady = $false
+    $maxDockerWait = 120
     for ($retry = 0; $retry -lt 24; $retry++) {
         try {
             $null = docker version 2>&1
@@ -499,13 +522,10 @@ function Install-OpenClaw {
             }
         } catch {}
         if ($retry -eq 0) {
-            # Try launching Docker Desktop if not running
-            try {
-                Start-Process "C:\Program Files\Docker\Docker\Docker Desktop.exe" -ErrorAction SilentlyContinue
-            } catch {}
+            try { Start-Process "C:\Program Files\Docker\Docker\Docker Desktop.exe" -ErrorAction SilentlyContinue } catch {}
         }
         $elapsed = [int](($retry + 1) * 5)
-        Log-Gray "Docker not ready yet... retrying in 5s (${elapsed}s / 120s)"
+        Show-WaitProgress -Current $elapsed -Max $maxDockerWait -Label "Waiting for Docker..."
         Start-Sleep -Seconds 5
     }
 
@@ -514,10 +534,9 @@ function Install-OpenClaw {
             Log-Err "Docker not responding after 120s."
         } else {
             Write-Host ""
-            Write-Host "  Docker is not responding after 2 minutes." -ForegroundColor Red
-            Write-Host "  Please:" -ForegroundColor Yellow
+            Write-Host "    Docker is not responding after 2 minutes." -ForegroundColor Red
             Write-Host "    1. Open Docker Desktop manually" -ForegroundColor Yellow
-            Write-Host "    2. Wait for it to say 'Docker Desktop is running'" -ForegroundColor Yellow
+            Write-Host "    2. Wait for 'Docker Desktop is running'" -ForegroundColor Yellow
             Write-Host "    3. Run this install command again" -ForegroundColor Yellow
             Write-Host ""
         }
@@ -527,21 +546,27 @@ function Install-OpenClaw {
     $dockerVersion = docker version --format '{{.Server.Version}}' 2>&1
     Log-Ok "Docker: OK (v$dockerVersion)"
 
-    # --- Step 2: Create install directory ---
-    Log-Step "[2/7] Setting up directory..."
+    # ──────────────────────────────────────────────────────────────
+    # Step 2: Directory
+    # ──────────────────────────────────────────────────────────────
+    Show-Progress -Step 2
     New-Item -ItemType Directory -Force -Path $installDir | Out-Null
     New-Item -ItemType Directory -Force -Path "$installDir\config" | Out-Null
     Log-Ok "Created: $installDir"
 
-    # --- Step 3: Generate gateway token ---
-    Log-Step "[3/7] Generating security token..."
+    # ──────────────────────────────────────────────────────────────
+    # Step 3: Security Token
+    # ──────────────────────────────────────────────────────────────
+    Show-Progress -Step 3
     $gatewayToken = -join ((65..90) + (97..122) + (48..57) | Get-Random -Count 32 | ForEach-Object { [char]$_ })
-    Log-Ok "Token generated"
+    Log-Ok "Gateway token generated"
 
-    # --- Step 4: Create config files ---
-    Log-Step "[4/7] Creating configuration..."
+    # ──────────────────────────────────────────────────────────────
+    # Step 4: Configuration
+    # ──────────────────────────────────────────────────────────────
+    Show-Progress -Step 4
 
-    # Build channel configuration based on -ChannelType
+    # Build channel configuration
     $channelConfig = "{}"
     switch ($ChannelType) {
         "discord" {
@@ -582,7 +607,7 @@ function Install-OpenClaw {
         }
     }
 
-    # openclaw.json
+    Show-Progress -Sub -Status "Writing openclaw.json..."
     @"
 {
   "gateway": {
@@ -623,7 +648,7 @@ function Install-OpenClaw {
 }
 "@ | Set-Content "$installDir\config\openclaw.json" -Encoding UTF8
 
-    # auth-profiles.json
+    Show-Progress -Sub -Status "Writing auth profiles..."
     @"
 {
   "version": 1,
@@ -637,7 +662,6 @@ function Install-OpenClaw {
 }
 "@ | Set-Content "$installDir\config\auth-profiles.json" -Encoding UTF8
 
-    # github-copilot.token.json
     @"
 {
   "token": "$CopilotToken",
@@ -645,7 +669,7 @@ function Install-OpenClaw {
 }
 "@ | Set-Content "$installDir\config\github-copilot.token.json" -Encoding UTF8
 
-    # SOUL.md for the workspace
+    Show-Progress -Sub -Status "Writing SOUL.md..."
     @"
 # SOUL.md - Who Is Your Assistant?
 
@@ -678,8 +702,18 @@ _Make it yours._
         }
     }
 
-    # --- Step 5: Create docker-compose.yml ---
-    Log-Step "[5/7] Creating Docker configuration..."
+    # Verify generated files
+    $configIssues = Verify-ConfigIntegrity $installDir
+    if ($configIssues.Count -gt 0) {
+        foreach ($issue in $configIssues) { Log-Warn "Config issue: $issue" }
+    } else {
+        Log-Ok "All config files verified"
+    }
+
+    # ──────────────────────────────────────────────────────────────
+    # Step 5: Docker Compose
+    # ──────────────────────────────────────────────────────────────
+    Show-Progress -Step 5
 
     @"
 services:
@@ -720,24 +754,19 @@ volumes:
   friend-workspace:
 "@ | Set-Content "$installDir\docker-compose.yml" -Encoding UTF8
 
-    Log-Ok "Docker compose created"
+    Log-Ok "Docker Compose file created"
 
-    # Verify generated files
-    $configIssues = Verify-ConfigIntegrity $installDir
-    if ($configIssues.Count -gt 0) {
-        foreach ($issue in $configIssues) { Log-Warn "Config issue: $issue" }
-    } else {
-        Log-Ok "All config files verified"
-    }
+    # ──────────────────────────────────────────────────────────────
+    # Step 6: Launch
+    # ──────────────────────────────────────────────────────────────
+    Show-Progress -Step 6
 
-    # --- Step 6: Start OpenClaw ---
-    Log-Step "[6/7] Starting OpenClaw..."
     Push-Location $installDir
     try {
-        Write-Host "  Running from: $(Get-Location)" -ForegroundColor Gray
-        Write-Host "  Directory: $installDir" -ForegroundColor Gray
+        Show-Progress -Sub -Status "Pulling images & starting containers..."
+        Log-Gray "Directory: $installDir"
         $composeOutput = docker compose up -d 2>&1 | Out-String
-        Write-Host $composeOutput -ForegroundColor Gray
+        if ($composeOutput.Trim()) { Log-Gray $composeOutput.Trim() }
         if ($LASTEXITCODE -ne 0) {
             Log-Err "Docker Compose failed to start: $composeOutput"
             Pop-Location
@@ -750,10 +779,16 @@ volumes:
     }
     Pop-Location
 
-    # Wait for gateway to become ready (up to 3 minutes)
-    Log-Step "  Containers started. Waiting for OpenClaw gateway to be ready (up to 3 minutes)..."
-    Log-Gray "First run downloads packages — this is normal."
+    Log-Ok "Containers started"
+
+    # ──────────────────────────────────────────────────────────────
+    # Step 7: Ready Check
+    # ──────────────────────────────────────────────────────────────
+    Show-Progress -Step 7
+
+    Show-Progress -Sub -Status "Waiting for gateway (first run downloads packages)..."
     $ready = $false
+    $maxGatewayWait = 180
     for ($i = 0; $i -lt 36; $i++) {
         Start-Sleep -Seconds 5
         try {
@@ -764,22 +799,21 @@ volumes:
             }
         } catch {}
         $elapsed = [int](($i + 1) * 5)
-        Log-Gray "Still starting... (${elapsed}s / 180s)"
+        Show-WaitProgress -Current $elapsed -Max $maxGatewayWait -Label "Gateway starting..."
     }
 
     if (-not $ready) {
         if (-not $HeadlessMode) {
-            Write-Host ""
-            Log-Warn "OpenClaw is still starting (this is normal on first run)."
-            Log-Warn "It needs to download packages. Check progress with:"
-            Log-Info "cd $installDir && docker compose logs -f"
-            Write-Host ""
+            Log-Warn "OpenClaw is still starting (normal on first run)."
+            Log-Warn "Check progress: cd $installDir && docker compose logs -f"
         }
     } else {
-        Log-Ok "OpenClaw is ready!"
+        Log-Ok "OpenClaw gateway is ready!"
     }
 
-    # --- Step 7: Show connection info ---
+    # ══════════════════════════════════════════════════════════════
+    # Final Output
+    # ══════════════════════════════════════════════════════════════
     $url = "http://localhost:18800/?token=$gatewayToken"
 
     # Save connection info
@@ -794,7 +828,6 @@ Date: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
 "@ | Set-Content "$installDir\CONNECTION-INFO.txt" -Encoding UTF8
 
     if ($HeadlessMode) {
-        # Machine-readable output for scripts/CI
         Write-Host "INSTALL_OK"
         Write-Host "URL=$url"
         Write-Host "TOKEN=$gatewayToken"
@@ -802,72 +835,62 @@ Date: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
         Write-Host "CHANNEL=$ChannelType"
         Write-Host "READY=$($ready.ToString().ToLower())"
     } else {
+        # Final progress bar — 100%
+        Show-Progress -Complete
+
+        Write-Host "  ╔══════════════════════════════════════╗" -ForegroundColor Green
+        Write-Host "  ║       OpenClaw is running! 🐾        ║" -ForegroundColor Green
+        Write-Host "  ╚══════════════════════════════════════╝" -ForegroundColor Green
         Write-Host ""
-        Write-Host "========================================" -ForegroundColor Green
-        Write-Host "   OpenClaw is running!" -ForegroundColor Green
-        Write-Host "========================================" -ForegroundColor Green
+        Write-Host "    Open in your browser:" -ForegroundColor White
+        Write-Host "    $url" -ForegroundColor Cyan
         Write-Host ""
-        Write-Host "  Open in your browser:" -ForegroundColor White
-        Write-Host "  $url" -ForegroundColor Cyan
-        Write-Host ""
-        Write-Host "  Your token (save this!): $gatewayToken" -ForegroundColor Yellow
-        Write-Host "  Install location: $installDir" -ForegroundColor Gray
+        Write-Host "    Your token (save this!): $gatewayToken" -ForegroundColor Yellow
+        Write-Host "    Install location: $installDir" -ForegroundColor Gray
         if ($ChannelType -ne "none") {
-            Write-Host "  Channel: $ChannelType (pre-configured)" -ForegroundColor Gray
+            Write-Host "    Channel: $ChannelType (pre-configured)" -ForegroundColor Gray
         }
         Write-Host ""
 
-        # Open browser (interactive only)
         if ($ready) {
             Start-Process $url
-            Write-Host "  Browser opened!" -ForegroundColor Green
+            Write-Host "    Browser opened!" -ForegroundColor Green
         } else {
-            Write-Host "  Once it's ready, open: $url" -ForegroundColor Cyan
+            Write-Host "    Once it's ready, open: $url" -ForegroundColor Cyan
         }
         Write-Host ""
 
-        # --- Final progress bar ---
+        # Getting Started Checklist
+        Write-Host "  ── Getting Started ──────────────────────" -ForegroundColor Cyan
         Write-Host ""
-        Write-Host "  [████████████████████] 100% (7/7)" -ForegroundColor Green
+        Write-Host "    [1] Open the web UI and say hello!" -ForegroundColor White
+        Write-Host "        $url" -ForegroundColor Gray
         Write-Host ""
-
-        # --- Getting Started Checklist ---
-        Write-Host "----------------------------------------" -ForegroundColor Cyan
-        Write-Host "   Getting Started" -ForegroundColor Cyan
-        Write-Host "----------------------------------------" -ForegroundColor Cyan
-        Write-Host ""
-        Write-Host "  [1] Open the web UI and say hello!" -ForegroundColor White
-        Write-Host "      $url" -ForegroundColor Gray
-        Write-Host ""
-        Write-Host "  [2] Give your AI a name and personality" -ForegroundColor White
-        Write-Host "      Edit SOUL.md in the workspace to customize" -ForegroundColor Gray
+        Write-Host "    [2] Give your AI a name and personality" -ForegroundColor White
+        Write-Host "        Edit SOUL.md in the workspace" -ForegroundColor Gray
         Write-Host ""
 
         if ($ChannelType -eq "none") {
-            Write-Host "  [3] Add a messaging channel (optional)" -ForegroundColor White
-            Write-Host "      Re-run with -ChannelType discord|telegram|signal" -ForegroundColor Gray
-            Write-Host "      Or configure manually in openclaw.json" -ForegroundColor Gray
+            Write-Host "    [3] Add a messaging channel (optional)" -ForegroundColor White
+            Write-Host "        Re-run with -ChannelType discord|telegram|signal" -ForegroundColor Gray
         } else {
-            Write-Host "  [3] $ChannelType is pre-configured" -ForegroundColor White
+            Write-Host "    [3] $ChannelType is pre-configured" -ForegroundColor White
             if ($ChannelToken -eq "") {
-                Write-Host "      Add your bot token to: $installDir\config\openclaw.json" -ForegroundColor Gray
+                Write-Host "        Add your bot token to: $installDir\config\openclaw.json" -ForegroundColor Gray
             } else {
-                Write-Host "      Should be connected once the gateway starts" -ForegroundColor Gray
+                Write-Host "        Should be connected once the gateway starts" -ForegroundColor Gray
             }
         }
         Write-Host ""
-        Write-Host "  [4] Check status anytime" -ForegroundColor White
-        Write-Host "      cd $installDir && docker compose logs -f" -ForegroundColor Gray
+        Write-Host "    [4] Check status:  cd $installDir && docker compose logs -f" -ForegroundColor Gray
+        Write-Host "    [5] Stop:          cd $installDir && docker compose down" -ForegroundColor Gray
+        Write-Host "    [6] Restart:       cd $installDir && docker compose up -d" -ForegroundColor Gray
         Write-Host ""
-        Write-Host "  [5] Stop / restart" -ForegroundColor White
-        Write-Host "      cd $installDir && docker compose down" -ForegroundColor Gray
-        Write-Host "      cd $installDir && docker compose up -d" -ForegroundColor Gray
-        Write-Host ""
-        Write-Host "  Need help? Check TROUBLESHOOTING.md or ask in Discord" -ForegroundColor Yellow
+        Write-Host "    Need help? Check TROUBLESHOOTING.md or ask in Discord" -ForegroundColor Yellow
         Write-Host ""
     }
 
-    # Clean up install state and reminder task
+    # Cleanup
     Remove-Item "$env:USERPROFILE\.openclaw-install-state.json" -Force -ErrorAction SilentlyContinue
     try { Unregister-ScheduledTask -TaskName "OpenClaw-Reminder" -Confirm:$false -ErrorAction SilentlyContinue } catch {}
 }
