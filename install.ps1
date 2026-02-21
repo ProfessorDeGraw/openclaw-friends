@@ -12,6 +12,7 @@
 #   -ChannelToken     Bot token for the chosen channel (Discord bot token, Telegram bot token, etc.)
 #   -Version          Print installer version and exit
 #   -Update           Check for newer version on GitHub and self-update
+#   -DryRun           Validate prerequisites without installing anything
 
 function Install-OpenClaw {
     param(
@@ -27,7 +28,9 @@ function Install-OpenClaw {
 
         [switch]$Version,
 
-        [switch]$Update
+        [switch]$Update,
+
+        [switch]$DryRun
     )
 
     $ErrorActionPreference = "Stop"
@@ -160,6 +163,148 @@ function Install-OpenClaw {
         Write-Host "   OpenClaw Installer (Friends Edition)" -ForegroundColor Cyan
         Write-Host "========================================" -ForegroundColor Cyan
         Write-Host ""
+    }
+
+    # ── Dry-run flag ─────────────────────────────────────────────
+    if ($DryRun) {
+        Write-Host ""
+        Write-Host "========================================" -ForegroundColor Cyan
+        Write-Host "   OpenClaw Pre-Install Check (Dry Run)" -ForegroundColor Cyan
+        Write-Host "========================================" -ForegroundColor Cyan
+        Write-Host ""
+
+        $checks = @()
+        $allPassed = $true
+
+        function Add-Check {
+            param([string]$Name, [bool]$Pass, [string]$Detail)
+            $script:checks += [PSCustomObject]@{ Name=$Name; Pass=$Pass; Detail=$Detail }
+            if (-not $Pass) { $script:allPassed = $false }
+        }
+
+        # --- Check 1: OS ---
+        try {
+            $build = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion").CurrentBuild
+            $isWin11 = [int]$build -ge 22000
+            $osName = (Get-CimInstance Win32_OperatingSystem).Caption
+            Add-Check "Operating System" $true "$osName (build $build)"
+        } catch {
+            Add-Check "Operating System" $true "Could not detect version (non-critical)"
+        }
+
+        # --- Check 2: PowerShell ---
+        $psVer = $PSVersionTable.PSVersion
+        Add-Check "PowerShell" ($psVer.Major -ge 5) "v$psVer"
+
+        # --- Check 3: WSL2 ---
+        $wslOk = $false
+        try {
+            $null = wsl --status 2>&1
+            if ($LASTEXITCODE -eq 0) { $wslOk = $true }
+        } catch {}
+        Add-Check "WSL2" $wslOk $(if ($wslOk) { "Installed and available" } else { "Not found — installer will set it up (requires restart)" })
+
+        # --- Check 4: Docker ---
+        $dockerOk = $false
+        $dockerVer = ""
+        try {
+            $dockerVer = docker version --format '{{.Server.Version}}' 2>&1
+            if ($LASTEXITCODE -eq 0) { $dockerOk = $true }
+        } catch {}
+        Add-Check "Docker Engine" $dockerOk $(if ($dockerOk) { "v$dockerVer" } else { "Not found — installer will download Docker Desktop" })
+
+        # --- Check 5: Docker Compose ---
+        $composeOk = $false
+        try {
+            $composeVer = docker compose version --short 2>&1
+            if ($LASTEXITCODE -eq 0) { $composeOk = $true }
+        } catch {}
+        Add-Check "Docker Compose" $composeOk $(if ($composeOk) { "v$composeVer" } else { "Not available (comes with Docker Desktop)" })
+
+        # --- Check 6: Port 18789 ---
+        $portFree = $true
+        try {
+            $listeners = netstat -ano 2>$null | Select-String ":18789\s"
+            if ($listeners) { $portFree = $false }
+        } catch {}
+        Add-Check "Port 18789" $portFree $(if ($portFree) { "Available" } else { "IN USE — another service is using this port" })
+
+        # --- Check 7: Disk space ---
+        $drive = Get-PSDrive C -ErrorAction SilentlyContinue
+        $freeGB = if ($drive) { [math]::Round($drive.Free / 1GB, 1) } else { 0 }
+        $diskOk = $freeGB -ge 5
+        Add-Check "Disk Space (C:)" $diskOk "${freeGB}GB free $(if ($diskOk) { '(need 5GB+)' } else { '— need at least 5GB' })"
+
+        # --- Check 8: Internet ---
+        $netOk = $false
+        try {
+            $r = Invoke-WebRequest -Uri "https://registry.hub.docker.com/" -UseBasicParsing -TimeoutSec 10 -ErrorAction Stop
+            if ($r.StatusCode -eq 200) { $netOk = $true }
+        } catch {}
+        Add-Check "Internet (Docker Hub)" $netOk $(if ($netOk) { "Reachable" } else { "Cannot reach Docker Hub — check connection/firewall" })
+
+        # --- Check 9: Existing install ---
+        $existsAlready = Test-Path $installDir
+        Add-Check "Existing Install" $true $(if ($existsAlready) { "Found at $installDir (will be updated)" } else { "Clean — no previous install" })
+
+        # --- Check 10: Token ---
+        $tokenOk = $false
+        if ($CopilotToken.Length -ge 10 -and $CopilotToken -ne "YOUR_COPILOT_TOKEN" -and $CopilotToken -ne "YOUR_TOKEN") {
+            $tokenOk = $true
+        }
+        Add-Check "Copilot Token" $tokenOk $(if ($tokenOk) { "Provided (length: $($CopilotToken.Length))" } else { "Not provided or invalid — pass -CopilotToken" })
+
+        # --- Check 11: Admin rights ---
+        $isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+        Add-Check "Admin Rights" $true $(if ($isAdmin) { "Running as Administrator" } else { "Not admin — WSL/Docker install may need elevation" })
+
+        # --- Check 12: RAM ---
+        try {
+            $totalRAM = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 1)
+            $ramOk = $totalRAM -ge 4
+            Add-Check "System RAM" $ramOk "${totalRAM}GB $(if ($ramOk) { '(4GB+ recommended)' } else { '— may be tight, 4GB+ recommended' })"
+        } catch {
+            Add-Check "System RAM" $true "Could not detect (non-critical)"
+        }
+
+        # --- Print results ---
+        Write-Host ""
+        $passed = ($checks | Where-Object { $_.Pass }).Count
+        $total = $checks.Count
+
+        foreach ($c in $checks) {
+            $icon = if ($c.Pass) { "✅" } else { "❌" }
+            $color = if ($c.Pass) { "Green" } else { "Red" }
+            Write-Host "  $icon " -NoNewline -ForegroundColor $color
+            Write-Host "$($c.Name): " -NoNewline -ForegroundColor White
+            Write-Host "$($c.Detail)" -ForegroundColor Gray
+        }
+
+        Write-Host ""
+        Write-Host "----------------------------------------" -ForegroundColor Cyan
+
+        $critical = $checks | Where-Object { -not $_.Pass -and $_.Name -in @("Port 18789", "Disk Space (C:)", "Internet (Docker Hub)", "Copilot Token") }
+
+        if ($critical.Count -eq 0) {
+            Write-Host "  Ready to install! ($passed/$total checks passed)" -ForegroundColor Green
+            Write-Host ""
+            $blockers = $checks | Where-Object { -not $_.Pass }
+            if ($blockers.Count -gt 0) {
+                Write-Host "  Note: $(($blockers | ForEach-Object { $_.Name }) -join ', ') not detected" -ForegroundColor Yellow
+                Write-Host "  but the installer will handle $(if ($blockers.Count -eq 1) { 'it' } else { 'them' }) automatically." -ForegroundColor Yellow
+                Write-Host ""
+            }
+            Write-Host "  Run without -DryRun to install:" -ForegroundColor White
+            Write-Host "    Install-OpenClaw -CopilotToken `"YOUR_TOKEN`"" -ForegroundColor Cyan
+        } else {
+            Write-Host "  Not ready — $($critical.Count) issue(s) to fix first:" -ForegroundColor Red
+            foreach ($c in $critical) {
+                Write-Host "    • $($c.Name): $($c.Detail)" -ForegroundColor Red
+            }
+        }
+
+        Write-Host ""
+        return
     }
 
     # --- Validate token format ---
