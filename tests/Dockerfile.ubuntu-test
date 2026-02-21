@@ -1,0 +1,32 @@
+# OpenClaw Install Test — Ubuntu 22.04 Container
+#
+# Build:
+#   docker build -t openclaw-test-ubuntu -f tests/Dockerfile.ubuntu-test .
+#
+# Run:
+#   docker run --rm --privileged \
+#     -e COPILOT_TOKEN=<your_token> \
+#     openclaw-test-ubuntu
+#
+# Notes:
+#   - --privileged is needed to run Docker-in-Docker
+#   - This simulates a fresh Ubuntu 22.04 minimal server
+#   - The test installs Docker inside the container, then runs the installer
+
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV LANG=C.UTF-8
+
+# Minimal server packages (what a fresh Ubuntu 22.04 server has)
+RUN apt-get update && apt-get install -y --no-install-recommends     ca-certificates     curl     wget     git     sudo     iproute2     net-tools     python3     iptables     && rm -rf /var/lib/apt/lists/*
+
+# Copy installer + test script
+COPY install.sh /opt/openclaw-friends/install.sh
+COPY tests/ubuntu-2204-test.sh /opt/openclaw-friends/tests/ubuntu-2204-test.sh
+RUN chmod +x /opt/openclaw-friends/tests/ubuntu-2204-test.sh     && chmod +x /opt/openclaw-friends/install.sh 2>/dev/null || true
+
+WORKDIR /opt/openclaw-friends
+
+# Default: run the test
+CMD ["bash", "tests/ubuntu-2204-test.sh"]
